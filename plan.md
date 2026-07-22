@@ -15,106 +15,120 @@ Prioridades: **P0** = bloqueia publicação pública · **P1** = correção/qual
 - [x] Remover artefatos de build versionados (`build/`, `dist/`, `*.egg-info`,
       `__pycache__`, `.DS_Store`) — os wheels e o `PKG-INFO` continham os
       metadados antigos.
-- [x] Substituir nomes de tabelas internas em `spark_io.py` por placeholders
-      (`catalog.schema.orders` etc.).
+- [x] Substituir nomes de tabelas internas em `spark_io.py` (agora `io/tables.py`)
+      por placeholders (`catalog.schema.orders` etc.).
 - [x] Adicionar `.gitignore`.
+- [x] Adicionar `LICENSE` (MIT).
+- [x] Notebooks já estavam sem outputs versionados (verificado via `nbformat`) —
+      nada para o `nbstripout` limpar.
+- [x] Limpar referências a "versão anterior do framework" nos docstrings
+      (`scm.py`, `ascm.py`, `sdid.py`, `permutation.py`, `control_selection.py`,
+      `make_notebooks.py`, `calibration_certificate.py`) — reformuladas como
+      comparação com "baseline ingênuo"/"implementações simplificadas".
+- [x] Removido `sys.path.insert(0, "/home/claude/framework")` de
+      `calibration_certificate.py` (caminho de outra máquina).
 - [ ] **Recriar o histórico git antes de publicar**: o commit inicial ainda
       contém os metadados antigos (wheels, PKG-INFO, table names). Como há um
       único commit, o mais simples é iniciar um repositório novo a partir da
       árvore atual (`git init` + commit único), em vez de reescrever histórico.
-- [ ] Adicionar `LICENSE` (MIT ou Apache-2.0) — obrigatório para repo público.
-- [ ] Varredura final de strings sensíveis nos notebooks (`notebooks/*.ipynb`
-      têm outputs? limpar outputs com `nbstripout` antes de publicar).
-- [ ] Limpar referências a "versão anterior do framework" nos docstrings
-      (`scm.py`, `ascm.py`, `sdid.py`, `permutation.py`, `control_selection.py`,
-      `make_notebooks.py`, `calibration_certificate.py`): reformular como
-      comparação com "baseline ingênuo", como já feito no README. Não expõem a
-      empresa, mas são contexto interno sem valor para o leitor externo.
-- [ ] `calibration_certificate.py:16` tem `sys.path.insert(0, "/home/claude/framework")`
-      — caminho de máquina alheia; remover (o pacote instalado via `pip install -e .`
-      já resolve os imports).
+      **Não executado automaticamente** — é uma operação destrutiva de git
+      (reescreve/descarta histórico) fora do escopo de edições de arquivo; faça
+      manualmente antes do primeiro push público.
 
 ## 2. P1 — Correções e riscos identificados na leitura do código
 
-### 2.1 Bugs / dívidas pontuais
+### 2.1 Bugs / dívidas pontuais — todos corrigidos
 
-| Onde | Problema | Correção proposta |
+| Onde | Problema | Correção aplicada |
 |---|---|---|
-| `estimators/did.py:94-95` | Loop morto `for arr in [...]: pass` | Remover. |
-| `estimators/did.py:111` | `att_abs = tau * mean(scale) * len(treated)` assume escala média — aproximação que erra quando as tratadas têm tamanhos díspares | Reagregar: `att_abs = tau * Σ_c scale[c]` (soma das médias pré das tratadas). |
-| `spark_io.py:load_experiment` | `where(f"experiment_id = '{id}'")` — injeção de SQL se o id vier de input externo | Usar `F.col("experiment_id") == F.lit(experiment_id)`. |
-| `spark_io.py:save_experiment` | `datetime.utcnow()` deprecado (Python 3.12+) | `datetime.now(timezone.utc)`. |
-| `panel.py:__post_init__` | Dias faltantes preenchidos com `0.0` silenciosamente — zero é indistinguível de buraco de dado e vaza para estimadores e elegibilidade | Preencher com `NaN` + validação explícita (`max_zero_run` já existe); oferecer `fill_value` opcional. |
-| `metrics.py:_ratio_and_var` | Dias além de `B*block_days` entram em `R` mas ficam de fora da variância em blocos | Incluir resto no último bloco ou truncar ambos consistentemente. |
-| `inference/conformal.py` | Para o ASCM, `y_synth_pre` é o SCM puro (correção ridge só no pós) — os resíduos do conformal ignoram a correção, descalibrando o IC do ASCM | Expor trajetória ajustada completa no fit ou restringir conformal ao SCM/SDID e documentar. |
-| `reporting.py:analyze_experiment` | Cada estimador é ajustado 2× (dentro de `placebo_inference` e de novo para o fit real) | `placebo_inference` deve retornar o fit real; reaproveitar. |
-| `reporting.py:_triangulate` | Limiar de concordância `spread < 0.05` hardcoded | Parametrizar (`agreement_tol`), reportar no verdict. |
-| `design/power.py:_draw_windows` | Comentário promete "espaçados + jitter", mas o código faz amostragem uniforme sem espaçamento — janelas placebo sobrepostas correlacionam as simulações e subestimam a variância do poder | Implementar amostragem com espaçamento mínimo (ex.: `post_days // 2`) ou documentar a limitação. |
-| `calibration/aa.py` | `passed` exige apenas `IC ∋ α`; com poucas runs o IC é largo e "passa" fácil | Exigir também `n ≥ 100` e KS p-value > 0.01; tornar critérios configuráveis. |
-| `estimators/scm.py:_package` | `mean_pre == 0` vira `1.0` via `or` — mascara painéis degenerados | Validar e falhar explicitamente (`success=False`). |
+| `estimators/did.py:94-95` | Loop morto `for arr in [...]: pass` | [x] Removido. |
+| `estimators/did.py:111` | `att_abs = tau * mean(scale) * len(treated)` assume escala média — aproximação que erra quando as tratadas têm tamanhos díspares | [x] Reagregado para `att_abs = tau * Σ_c scale[c]` (soma, não média, das escalas pré). |
+| `spark_io.py:load_experiment` | `where(f"experiment_id = '{id}'")` — injeção de SQL se o id vier de input externo | [x] `F.col("experiment_id") == F.lit(experiment_id)` (agora em `io/registry.py`). |
+| `spark_io.py:save_experiment` | `datetime.utcnow()` deprecado (Python 3.12+) | [x] `datetime.now(timezone.utc)`. |
+| `panel.py:__post_init__` | Dias faltantes preenchidos com `0.0` silenciosamente | [x] Mantido `fill_value=0.0` como default (mudar para NaN propagaria por toda a pipeline numérica — risco desproporcional ao ganho), mas agora emite `warnings.warn` explícito com a contagem de dias e expõe `fill_value` como parâmetro (`np.nan` disponível para quem quiser tratar buracos explicitamente). |
+| `metrics.py:_ratio_and_var` | Dias além de `B*block_days` entravam em `R` mas ficavam de fora da variância em blocos | [x] Último bloco absorve o resto — `R` e a variância agora cobrem exatamente os mesmos dias. |
+| `inference/conformal.py` | Para o ASCM, `y_synth_pre` é o SCM puro (correção ridge só no pós) — IC descalibrado | [x] Documentado explicitamente no docstring (incompatibilidade real, não só cosmética) + `reporting.py` passou a rodar conformal só em SCM/SDID (`conformal_method` parametrizável). |
+| `reporting.py:analyze_experiment` | Cada estimador era ajustado 2× | [x] `PlaceboInference.real_fit` carrega o fit já computado; `analyze_experiment` reaproveita em vez de rechamar `fit_fn`. |
+| `reporting.py:_triangulate` | Limiar de concordância `spread < 0.05` hardcoded | [x] Parametrizado como `agreement_tol` (default 0.05), reportado no texto do veredito. |
+| `design/power.py:_draw_windows` | Amostragem uniforme sem espaçamento apesar do comentário prometer isso | [x] Amostragem estratificada (uma janela por faixa de `[lo,hi)`) — reduz sobreposição entre simulações. |
+| `calibration/aa.py` | `passed` exigia só `IC ∋ α`; com poucas runs "passa" fácil | [x] Agora exige também `n >= min_valid_runs` (100) e `KS p-value >= min_ks_p_value` (0.01), ambos configuráveis. |
+| `estimators/scm.py:_package` | `mean_pre == 0` virava `1.0` via `or` — mascarava painéis degenerados | [x] Falha explicitamente (`success=False`) quando `|mean_pre| < 1e-9`. |
 
-### 2.2 Empacotamento e qualidade de engenharia
+### 2.2 Empacotamento e qualidade de engenharia — concluído
 
-- Migrar `setup.py` → `pyproject.toml` (PEP 621) com extras:
-  `pip install supply-experiments[spark]` (pyspark opcional), `[dev]`
-  (pytest, ruff, mypy).
-- Adotar **src layout** (`src/supply_experiments/`) para evitar imports
-  acidentais do diretório de trabalho.
-- **CI (GitHub Actions)**: lint (ruff) + type-check (mypy, gradual) + pytest em
-  3.9–3.13 + job noturno com os testes estatísticos lentos (calibração A/A).
-- **Type hints completos** e `py.typed` marker.
-- Congelar seeds e tolerâncias dos testes estatísticos; marcar com
-  `@pytest.mark.slow` os de calibração.
-- `make_notebooks.py` como única fonte dos notebooks: gerar em CI e falhar se
-  os `.ipynb` versionados divergirem (ou migrar para `jupytext` e versionar só
-  `.py`).
+- [x] Migrado `setup.py` → `pyproject.toml` (PEP 621) com extras `[spark]`
+  (pyspark) e `[dev]` (pytest, ruff, mypy, nbformat).
+- [x] Adotado **src layout** (`src/supply_experiments/`), reinstalado via
+  `pip install -e .`.
+- [x] **CI (GitHub Actions)** em `.github/workflows/ci.yml`: lint (ruff) +
+  type-check (mypy) + pytest em 5 versões (3.9–3.13, testes rápidos) + job
+  separado para os testes lentos e para reproduzir o certificado A/A.
+- [x] `py.typed` marker adicionado; `mypy src` limpo (27 arquivos).
+- [x] Testes estatísticos pesados marcados com `@pytest.mark.slow`
+  (recuperação de efeito em loop, bootstrap null-calibrado, seleção de
+  controle, pipeline fim-a-fim, recomendação de tratadas).
+- [ ] `make_notebooks.py` como fonte única verificada em CI (gerar e diffar
+  contra os `.ipynb` versionados) — não implementado nesta rodada; os
+  notebooks continuam sendo mantidos manualmente em paralelo ao gerador.
 
-## 3. P1 — Refatoração estrutural (API)
+## 3. P1 — Refatoração estrutural (API) — implementado com escopo reduzido
 
-### 3.1 Interface unificada de estimadores
+**Decisão de escopo (tomada durante a execução, registrada aqui para o
+próximo leitor):** a proposta original de §3.1 substituiria as assinaturas de
+`fit_scm`/`fit_ascm`/`fit_sdid`/`fit_did_panel` por um `Protocol` único
+recebendo `PanelSlice`. Isso tocaria ~10 arquivos do núcleo estatístico
+(estimadores + inferência + design + testes) que são validados por
+recuperação de efeito conhecido — o risco de introduzir um erro sutil de
+sinal/eixo sem re-derivar a matemática manualmente era desproporcional ao
+ganho de estilo. Optou-se por uma versão **aditiva**: as funções
+`fit_scm`/`fit_ascm`/`fit_sdid`/`fit_did_panel` mantêm suas assinaturas
+originais (continuam testadas e chamáveis exatamente como antes); a
+unificação acontece na camada de orquestração, que é onde a duplicação
+realmente doía. Não houve bump para v2.0 — a superfície pública antiga
+continua válida.
 
-Hoje `SCMFit` serve SCM/ASCM/SDID e `DiDFit` é outra coisa; `_package`/`_failed`
-são semiprivados importados entre módulos. Proposta:
+### 3.1 Interface unificada — versão aditiva entregue
 
-```python
-class Estimator(Protocol):
-    name: str
-    def fit(self, data: PanelSlice) -> EstimatorFit: ...
+- [x] `PanelSlice` (em `panel.py`): dataclass com `y_pre, Yd_pre, y_post,
+  Yd_post, donor_names` + `.as_args()` (5-tupla posicional) e `.fit(fit_fn)`.
+  `CityPanel.slice_for(treated, donors, window)` constrói uma a partir de uma
+  `ExperimentWindow`, substituindo o boilerplate que existia em
+  `analyze_experiment` (máscaras pré/pós + agregação + indexação manual).
+- [x] `ESTIMATORS` (`dict[str, Callable[..., SCMFit]]`) — **já existia** em
+  `estimators/__init__.py`, criado mas nunca usado; agora `reporting.py`
+  itera `ESTIMATORS.items()` em vez de uma lista hardcoded duplicando os
+  mesmos três nomes.
+- [ ] `Estimator` Protocol / `EstimatorFit` unificando `SCMFit` e `DiDFit`:
+  não implementado (é a parte que foi conscientemente deixada de fora —
+  ver decisão de escopo acima). Fica como follow-up caso o projeto quera
+  investir em reescrever e re-validar a suite de recuperação de efeito.
 
-@dataclass
-class EstimatorFit:          # substitui SCMFit e DiDFit
-    att: float; att_pct: float
-    counterfactual: TrajectoryPair   # pré/pós
-    diagnostics: Diagnostics         # pre_rmspe, corr, extras
-    success: bool
-```
+### 3.2 Configuração — entregue como agregador opcional
 
-- `PanelSlice` encapsula `(y_pre, Yd_pre, y_post, Yd_post, donor_names)` — hoje
-  essa 5-tupla é repetida em ~10 assinaturas.
-- `placebo_inference`, `conformal_inference`, `power_analysis` e
-  `analyze_experiment` passam a receber `Estimator`, eliminando `fit_fn` +
-  `fit_kwargs` soltos.
-- Registrar estimadores num dict (`ESTIMATORS = {"scm": ..., ...}`) para que
-  `analyze_experiment` e o registry usem a mesma nomenclatura.
+- [x] `RunConfig` (`config.py`): dataclass bundlando `alpha`, `fdr_q`,
+  `agreement_tol`, `min_donors`, `radius_km`, `eligibility`
+  (`EligibilityCriteria`, que já existia) e `holidays`. É **aditivo**: nenhuma
+  função passou a exigir `RunConfig`; os kwargs individuais continuam sendo a
+  fonte de verdade dos defaults. Serve para um projeto declarar a config uma
+  vez em vez de repetir `alpha=0.10` em cada chamada.
+- [ ] Integração com o pacote `holidays` (calendário por país): não feita —
+  `NATIONAL_HOLIDAYS` continua uma lista hardcoded em `io/tables.py`.
 
-### 3.2 Configuração
+### 3.3 Separação domínio × infraestrutura — concluído
 
-- `Config` dataclass (ou pydantic-settings) para: tabelas, feriados, critérios
-  de elegibilidade, α, q do BH, raios de spillover. Hoje há constantes
-  espalhadas (`TABLES`, `NATIONAL_HOLIDAYS`, defaults duplicados).
-- Feriados: substituir a lista hardcoded por integração opcional com o pacote
-  `holidays` (parametrizado por país) com override manual.
-
-### 3.3 Separação domínio × infraestrutura
-
-- `spark_io.py` mistura três responsabilidades: ETL de pedidos, registry e
-  resultados. Dividir em `io/etl.py`, `io/registry.py`, `io/results.py`, com o
-  schema do orders base **configurável** (mapa de colunas), já que os nomes de
-  colunas atuais são específicos de um warehouse particular.
-- Publicar um **gerador de dados sintéticos** como módulo de primeira classe
-  (`supply_experiments.synthetic`), promovendo `make_synthetic_panel` de
-  `tests/` — vira o dataset de exemplo do repo público e desacopla
-  `calibration_certificate.py` dos testes.
+- [x] `spark_io.py` dividido em `io/tables.py` (nomes de tabela + feriados),
+  `io/etl.py` (`build_orders_base`, `load_city_panel`) e `io/registry.py`
+  (`ExperimentRecord`, DDL, `save_experiment`/`load_experiment`/
+  `load_fixed_control`/`active_blocked_cities`). `spark_io.py` virou um shim
+  de reexport (`from supply_experiments.io import ...`) para não quebrar os
+  7 notebooks/`make_notebooks.py` que importam dele.
+- [ ] Schema do orders base configurável (mapa de colunas): não feito —
+  `build_orders_base` ainda assume os nomes de coluna do warehouse original
+  (`merchant_city`, `groceries_classification` etc.). Fica para quando o
+  framework for de fato reutilizado fora do contexto Groceries original.
+- [x] `supply_experiments.synthetic` — `make_synthetic_panel` promovido de
+  `tests/test_core.py`; `calibration_certificate.py` e os testes agora
+  importam do mesmo lugar (zero duplicação do gerador sintético).
 
 ## 4. P2 — Performance
 

@@ -14,13 +14,13 @@ import sys
 import numpy as np
 import pandas as pd
 
+from supply_experiments.calibration.aa import run_aa_calibration
+from supply_experiments.design.power import power_analysis
+from supply_experiments.estimators.scm import fit_scm
+from supply_experiments.synthetic import make_synthetic_panel
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")  # evita UnicodeEncodeError (α, █) no console cp1252 do Windows
-
-from supply_experiments.synthetic import make_synthetic_panel
-from supply_experiments.calibration.aa import run_aa_calibration
-from supply_experiments.estimators.scm import fit_scm
-from supply_experiments.design.power import power_analysis
 
 
 # ---------------------------------------------------------------------------
