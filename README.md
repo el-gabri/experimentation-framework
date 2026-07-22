@@ -1,114 +1,145 @@
-# supply_experiments — Framework de Experimentação Geográfica (iFood Groceries)
+# supply_experiments — Geo-Experimentation Framework
 
-Framework de experimentação por cidades com rigor estatístico mensurável e escalável:
-biblioteca Python testada + notebooks Databricks finos + registry v2 com pré-registro
-como contrato + calibração A/A como certificado permanente.
+A city-level (geo) experimentation framework with measurable statistical rigor:
+a tested Python library, thin Databricks notebook clients, an experiment
+registry with pre-registration as a contract, and A/A calibration as a
+permanent validity certificate.
 
-## Por que reescrever
+> **Status:** internal proof of concept, made public for reference. Data
+> adapters (`spark_io.py`) use placeholder table names — point them to your own
+> environment. Everything else runs offline on plain pandas/numpy.
 
-Diagnóstico do framework anterior (4 notebooks):
+## Why this exists
 
-| # | Problema | Consequência | Solução aqui |
-|---|----------|--------------|--------------|
-| P0 | t-test OLS em séries agregadas (autocorrelação ignorada, n efetivo ≈ 2 unidades) | **FPR medido em A/A: 43% a α=5%** | Inferência por permutação (Abadie), conformal (CWZ 2021), wild cluster bootstrap |
-| P0 | p-value de tendências paralelas otimizado na seleção do controle (pre-testing) | Controle overfitado ao período pré | Holdout temporal: otimiza no treino, aceita no holdout; p-value fora do score |
-| P0 | Target "Brasil" inclui tratadas e o próprio controle | Efeito vaza para o benchmark | Target exclui controle + tratadas ativas (registry) |
-| P1 | "ASCM" somava resíduo médio (zera gap pré por construção) | Fit aparente inflado, sem correção real | ASCM ridge fiel (Ben-Michael 2021), λ por LOO-CV |
-| P1 | "SDID" com pesos temporais lineares arbitrários | Sem as garantias do paper | SDID fiel (Arkhangelsky 2021): ζ, pesos unitários e temporais otimizados |
-| P1 | Sem análise de poder | Experimentos natimortos (MDE > efeito esperado) | Power gate por simulação; `save_experiment` recusa design sem poder |
-| P2 | Razões (rupture rate) via OLS na taxa diária | Variância errada | Razão de somas + método delta em blocos semanais |
-| P2 | Pesos SC em JSON no `experiment_description` | Frágil, quebra silenciosa | `weight DOUBLE` no struct de unidades do registry v2 |
-| P2 | Código duplicado 4x, sem testes | Divergências silenciosas | 1 pacote, 20 testes (incluindo testes de calibração estatística) |
-| P2 | Múltiplos KPIs sem correção; peeking possível | Inflação de falsos positivos | BH nos guardrails; anti-peeking estrutural em `analyze_experiment` |
-| P2 | Sem tratamento de spillover | Metropolitana contamina doadoras | Exclusão por raio (haversine) + adjacência explícita |
+Measuring the impact of an intervention rolled out in a handful of cities is
+statistically hostile territory: few treated units, strong day-of-week and
+seasonal structure, autocorrelated daily series, and donor pools contaminated
+by spillover. Naive approaches — e.g. a classical t-test on an OLS regression
+over aggregated treated-vs-control series — ignore autocorrelation and deliver
+false-positive rates far above the nominal α (43% at α = 0.05 in our A/A
+benchmark below). This framework is built so that every reported p-value means
+what it claims to mean.
 
-## Certificado de calibração (A/A, painel sintético 40 cidades × 430 dias)
+Core principles:
+
+1. **Measurable validity** — every estimator must pass A/A calibration before use.
+2. **Design ≠ estimation ≠ decision**, with explicit contracts (registry + pre-registration).
+3. **Permutation / conformal inference by default** — the only honest options with 1–3 treated units.
+4. **Tested library, thin notebooks** — one implementation, no copy-paste divergence.
+5. **Triangulation** — DiD, SCM, ASCM and SDID side by side, with an explicit agreement verdict.
+
+## Calibration certificate (A/A, synthetic panel: 40 cities × 430 days)
 
 ```
-MÉTODO ANTIGO (OLS agregado, t clássico):
-  FPR @ α=0.05: 43.3%   (esperado: 5%)   ← quase metade dos "significativos" é falsa
-  FPR @ α=0.10: 49.2%   (esperado: 10%)
+NAIVE BASELINE (aggregated OLS, classical t-test):
+  FPR @ α=0.05: 43.3%   (expected: 5%)   ← nearly half of all "significant" results are false
+  FPR @ α=0.10: 49.2%   (expected: 10%)
 
-MÉTODO NOVO (SCM + permutação in-space):
-  FPR @ α=0.10:  7.5%   IC95% [3.5%, 13.8%]   ← calibrado
-  KS p-value (uniformidade dos p-values): 0.486
-  Viés mediano do ATT placebo: +0.04%
+THIS FRAMEWORK (SCM + in-space permutation):
+  FPR @ α=0.10:  7.5%   95% CI [3.5%, 13.8%]   ← calibrated
+  KS p-value (p-value uniformity): 0.486
+  Median placebo ATT bias: +0.04%
 
-CURVA DE PODER (2 tratadas, 18 doadoras, 35 dias, SCM):
+POWER CURVE (2 treated, 18 donors, 35 days, SCM):
   δ=3% → 36% | δ=5% → 76% | δ=8% → 88% | δ=12% → 100%   (MDE@80% = 8%)
 ```
 
-Reproduza com `python calibration_certificate.py`. O notebook `05_aa_calibration`
-roda o mesmo procedimento **nos dados reais** e persiste o certificado — rode-o
-após qualquer mudança de estimador (teste de regressão estatístico).
+Reproduce with `python calibration_certificate.py`. The `05_aa_calibration`
+notebook runs the same procedure **on real data** and persists the certificate —
+run it after any estimator change (a statistical regression test).
 
-## Arquitetura
+## Architecture
 
 ```
-supply_experiments/
-├── panel.py                  # CityPanel (outcome + num/den p/ razões), ExperimentWindow
+src/supply_experiments/
+├── panel.py                  # CityPanel (outcome + num/den for ratio KPIs), ExperimentWindow
 ├── estimators/
-│   ├── scm.py                # SCM Abadie; simplex via FISTA + projeção exata (Duchi 2008)
-│   ├── ascm.py               # Ridge-ASCM fiel (Ben-Michael, Feller & Rothstein 2021)
-│   ├── sdid.py               # SDID fiel (Arkhangelsky et al. 2021), ζ + Frank-Wolfe
-│   └── did.py                # DiD painel nível-cidade, within-FE, escala normalizada
+│   ├── scm.py                # Abadie SCM; simplex via FISTA + exact projection (Duchi 2008)
+│   ├── ascm.py               # Ridge-augmented SCM (Ben-Michael, Feller & Rothstein 2021)
+│   ├── sdid.py               # Synthetic DiD (Arkhangelsky et al. 2021), ζ + Frank-Wolfe
+│   └── did.py                # City-level panel DiD, within-FE, normalized scale
 ├── inference/
-│   ├── permutation.py        # p-value razão RMSPE pós/pré (Abadie) — inferência primária
-│   ├── conformal.py          # ICs por inversão de teste (Chernozhukov, Wüthrich & Zhu 2021)
-│   └── bootstrap.py          # Wild cluster bootstrap-t restrito; pesos Webb se G<12
+│   ├── permutation.py        # post/pre RMSPE-ratio p-value (Abadie) — primary inference
+│   ├── conformal.py          # CIs by test inversion (Chernozhukov, Wüthrich & Zhu 2021)
+│   └── bootstrap.py          # Restricted wild cluster bootstrap-t; Webb weights if G<12
 ├── design/
-│   ├── power.py              # poder por simulação em janelas históricas; MDE@80%
-│   ├── control_selection.py  # greedy+swaps no treino; teste F só no holdout
-│   └── spillover.py          # exclusão por raio/adjacência; elegibilidade (zero-runs, CV)
-├── calibration/aa.py         # runner A/A: FPR + IC Clopper-Pearson + KS + viés
-├── metrics.py                # ratio DiD com método delta (blocos semanais)
-├── reporting.py              # analyze_experiment: triangulação + BH + anti-peeking
-└── spark_io.py               # build_orders_base ÚNICO, load_city_panel, registry v2
+│   ├── power.py              # simulation-based power on historical windows; MDE@80%
+│   ├── control_selection.py  # greedy+swaps on train split; F-test only on holdout
+│   ├── treated_selection.py  # ranks candidate treated sets by MDE (measurability-first design)
+│   └── spillover.py          # radius/adjacency exclusion; eligibility (zero-runs, CV)
+├── calibration/aa.py         # A/A runner: FPR + Clopper-Pearson CI + KS + bias
+├── synthetic.py              # synthetic panel generator (tests + calibration_certificate.py)
+├── config.py                 # RunConfig: centralized defaults (alpha, spillover, eligibility)
+├── metrics.py                # ratio DiD with delta method (weekly blocks)
+├── reporting.py              # analyze_experiment: triangulation + BH + anti-peeking
+├── io/                        # Spark/Databricks adapters, split by concern
+│   ├── tables.py             # table names + holiday calendar
+│   ├── etl.py                # build_orders_base, load_city_panel
+│   └── registry.py           # ExperimentRecord, pre-registration gate, registry queries
+└── spark_io.py               # back-compat re-export of `io.*` (existing notebooks import this)
 
-notebooks/  (clientes finos, ~30 linhas de lógica cada)
-├── 01_etl.ipynb                       # painel + elegibilidade
-├── 02_fixed_control_selection.ipynb   # controle fixo com holdout
-├── 03_design_experiment.ipynb         # spillover + POWER GATE + pré-registro
-├── 04_analyze_experiment.ipynb        # triangulação + persistência
-└── 05_aa_calibration.ipynb            # certificado recorrente nos dados reais
+notebooks/  (thin clients, ~30 lines of logic each)
+├── 01_etl.ipynb                       # panel + eligibility
+├── 02_fixed_control_selection.ipynb   # fixed control with temporal holdout
+├── 03_design_experiment.ipynb         # spillover + POWER GATE + pre-registration
+├── 04_analyze_experiment.ipynb        # triangulation + persistence
+└── 05_aa_calibration.ipynb            # recurring certificate on real data
 
-tests/test_core.py            # 20 testes, incluindo recuperação de efeito e calibração
+tests/test_core.py            # 20 tests, incl. effect recovery and statistical calibration
 ```
 
-## Fluxo de um experimento
+## Experiment lifecycle
 
-1. **Design** (`03_design_experiment`): tratadas propostas → donor pool limpo de
-   spillover → `power_analysis` estima MDE → `save_experiment` **recusa** se
-   MDE > efeito esperado, hipótese vazia, regra de decisão vazia ou <8 doadoras.
-2. **Execução**: intervenção roda; ninguém analisa (anti-peeking é `ValueError`).
-3. **Análise** (`04_analyze_experiment`): SCM+ASCM+SDID com permutação, conformal,
-   DiD/WCB opcional, guardrails delta+BH, veredito de triangulação
-   (CONCORDANTE / PARCIAL / DIVERGENTE).
-4. **Decisão**: contra a `decision_rule` pré-registrada — nunca ad hoc.
+1. **Design** (`03_design_experiment`): proposed treated cities → donor pool
+   cleaned of spillover → `power_analysis` estimates the MDE → `save_experiment`
+   **refuses** the design if MDE > expected effect, the hypothesis is empty, the
+   decision rule is empty, or there are fewer than 8 donors.
+2. **Execution**: the intervention runs; nobody analyzes (anti-peeking raises
+   `ValueError`).
+3. **Analysis** (`04_analyze_experiment`): SCM + ASCM + SDID with permutation
+   inference, conformal CIs, optional panel DiD with wild cluster bootstrap,
+   delta-method guardrails with BH correction, and a triangulation verdict
+   (CONCORDANT / PARTIAL / DIVERGENT).
+4. **Decision**: made against the pre-registered `decision_rule` — never ad hoc.
 
-## Decisões estatísticas importantes
+## Key statistical design decisions
 
-- **α padrão 0.10 para permutação**: com J doadoras o p-value mínimo é 1/(J+1);
-  com 15 doadoras, 0.0625 — α=0.05 exigiria ≥20 doadoras. O relatório avisa
-  quando o donor pool limita a granularidade.
-- **Estatística RMSPE-ratio** como primária (robusta a placebos com fit pré ruim);
-  p(|ATT|) reportado para transparência.
-- **DiD em nível de cidade com y normalizado pela média pré**: sem isso, within-FE
-  remove nível mas não escala e o τ é dominado pelas cidades grandes.
-- **FISTA no simplex, não SLSQP**: SLSQP declarava sucesso com objetivo ~20x pior
-  em instâncias com doadoras de escalas díspares (bug encontrado nos testes).
+- **Default α = 0.10 for permutation inference**: with J donors the minimum
+  attainable p-value is 1/(J+1); with 15 donors that is 0.0625 — α = 0.05 would
+  require ≥ 20 donors. Reports warn when the donor pool limits granularity.
+- **RMSPE-ratio as the primary statistic** (robust to placebos with poor
+  pre-period fit); p(|ATT|) is reported for transparency.
+- **City-level DiD with outcomes normalized by the pre-period mean**: without
+  this, within-FE removes level but not scale, and τ is dominated by the
+  largest cities.
+- **FISTA with exact simplex projection instead of SLSQP**: SLSQP declares
+  success with an objective ~20× worse than optimal on instances with donors of
+  very different scales (a failure mode caught by the test suite).
+- **Ratio KPIs via ratio-of-sums + delta method on weekly blocks** — never OLS
+  on the daily ratio, whose variance explodes on small-denominator days.
+- **Control selection with temporal holdout**: the parallel-trends test is an
+  acceptance criterion on held-out data, never part of the optimization score
+  (no pre-testing contamination).
 
-## Migração
+## Getting started
 
-1. Publicar o wheel: `pip wheel .` → `/Workspace/Shared/supply_experiments/`.
-2. Rodar `01_etl` e `05_aa_calibration` (sandbox) — obter o certificado nos dados reais.
-3. Reproduzir o último experimento real com `04_analyze_experiment` e comparar com
-   o resultado antigo (esperar p-values bem mais conservadores).
-4. Congelar os notebooks antigos; novos experimentos só via registry v2.
+```bash
+pip install -e ".[dev]"
+pytest tests/ -q -m "not slow"         # fast unit tests
+pytest tests/ -q -m slow               # statistical calibration (effect recovery, A/A FPR)
+python calibration_certificate.py      # reproduce the A/A certificate
+```
 
-## Referências
+Optional extras: `pip install -e ".[spark]"` for the Databricks/Spark adapters
+in `spark_io.py` (not needed to run the core library or the test suite).
 
-Abadie, Diamond & Hainmueller (2010, JASA); Abadie (2021, JEL); Arkhangelsky et al.
-(2021, AER); Ben-Michael, Feller & Rothstein (2021, JASA); Chernozhukov, Wüthrich &
-Zhu (2021, JASA); Cameron, Gelbach & Miller (2008, REStat); MacKinnon & Webb (2018);
-Duchi et al. (2008, ICML).
+The library core (`panel`, `estimators`, `inference`, `design`, `calibration`,
+`metrics`, `reporting`) has no Spark dependency and runs anywhere. Spark is
+imported lazily inside `spark_io.py` only.
+
+## References
+
+Abadie, Diamond & Hainmueller (2010, JASA); Abadie (2021, JEL); Arkhangelsky et
+al. (2021, AER); Ben-Michael, Feller & Rothstein (2021, JASA); Chernozhukov,
+Wüthrich & Zhu (2021, JASA); Cameron, Gelbach & Miller (2008, REStat);
+MacKinnon & Webb (2018); Duchi et al. (2008, ICML).

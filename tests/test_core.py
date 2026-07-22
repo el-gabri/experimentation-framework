@@ -9,54 +9,19 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from supply_experiments.panel import CityPanel, ExperimentWindow
-from supply_experiments.estimators.scm import fit_scm
-from supply_experiments.estimators.ascm import fit_ascm
-from supply_experiments.estimators.sdid import fit_sdid
-from supply_experiments.estimators.did import fit_did_panel
-from supply_experiments.inference.permutation import placebo_inference
-from supply_experiments.inference.conformal import conformal_inference
-from supply_experiments.inference.bootstrap import wild_cluster_bootstrap
-from supply_experiments.metrics import ratio_did
-from supply_experiments.design.spillover import spillover_exclusions, max_zero_run
 from supply_experiments.design.control_selection import select_fixed_control
+from supply_experiments.design.spillover import max_zero_run, spillover_exclusions
+from supply_experiments.estimators.ascm import fit_ascm
+from supply_experiments.estimators.did import fit_did_panel
+from supply_experiments.estimators.scm import fit_scm
+from supply_experiments.estimators.sdid import fit_sdid
+from supply_experiments.inference.bootstrap import wild_cluster_bootstrap
+from supply_experiments.inference.conformal import conformal_inference
+from supply_experiments.inference.permutation import placebo_inference
+from supply_experiments.metrics import ratio_did
+from supply_experiments.panel import CityPanel, ExperimentWindow
 from supply_experiments.reporting import analyze_experiment, benjamini_hochberg
-
-
-# ---------------------------------------------------------------------------
-# DGP sintético: fator comum + sazonalidade + heterogeneidade + ruído AR(1)
-# ---------------------------------------------------------------------------
-
-def make_synthetic_panel(n_cities=30, n_days=400, seed=0, treat_effect=0.0,
-                         treated=None, treat_start_idx=None):
-    rng = np.random.default_rng(seed)
-    idx = pd.date_range("2025-01-01", periods=n_days, freq="D")
-    t = np.arange(n_days)
-
-    common = 1.0 + 0.001 * t + 0.10 * np.sin(2 * np.pi * t / 365)
-    dow = np.array([1.0, 0.95, 0.95, 1.0, 1.1, 1.3, 1.25])[idx.dayofweek]
-
-    data = {}
-    for i in range(n_cities):
-        base = np.exp(rng.normal(10.5, 0.8))
-        loading = rng.uniform(0.7, 1.3)
-        # AR(1) multiplicativo
-        eps = np.zeros(n_days)
-        for k in range(1, n_days):
-            eps[k] = 0.55 * eps[k - 1] + rng.normal(0, 0.05)
-        y = base * (common ** loading) * dow * np.exp(eps)
-        data[f"CITY_{i:02d}"] = y
-    df = pd.DataFrame(data, index=idx)
-
-    if treat_effect != 0.0 and treated and treat_start_idx is not None:
-        for c in treated:
-            df.iloc[treat_start_idx:, df.columns.get_loc(c)] *= (1.0 + treat_effect)
-
-    orders = (df / 50.0).round()
-    rupt = orders * 0.04 + rng.normal(0, 0.5, size=df.shape).clip(0)
-    return CityPanel(outcome=df,
-                     numerators={"rupture_rate_order": rupt},
-                     denominators={"rupture_rate_order": orders})
+from supply_experiments.synthetic import make_synthetic_panel
 
 
 def split_panel(panel, treated, pre_days=120, post_days=35, start_idx=300):
@@ -135,6 +100,7 @@ def test_placebo_pvalue_small_under_effect():
     assert inf.p_value <= 0.10
 
 
+@pytest.mark.slow
 def test_placebo_pvalue_large_under_null():
     ps = []
     for seed in range(5):
@@ -169,6 +135,7 @@ def test_wild_cluster_bootstrap_runs_and_rejects_effect():
     assert res.weight_type in ("webb", "rademacher")
 
 
+@pytest.mark.slow
 def test_wild_cluster_bootstrap_null_calibrated():
     rejections = 0
     n = 12
@@ -224,6 +191,7 @@ def test_max_zero_run():
     assert max_zero_run(np.array([1, 0, 0, 0, 2, 0])) == 3
 
 
+@pytest.mark.slow
 def test_control_selection_holdout_is_not_optimized():
     panel = make_synthetic_panel(seed=10, n_cities=25, n_days=365)
     states = {c: ["SP", "RJ", "MG", "BA", "RS"][i % 5] for i, c in enumerate(panel.cities)}
@@ -238,6 +206,7 @@ def test_control_selection_holdout_is_not_optimized():
 # Pipeline fim-a-fim
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow
 def test_analyze_experiment_end_to_end_and_antipeeking():
     true_eff = 0.10
     panel = make_synthetic_panel(seed=11, n_cities=25, treat_effect=true_eff,
@@ -264,9 +233,12 @@ def test_analyze_experiment_end_to_end_and_antipeeking():
     assert not rep.guardrails.empty
 
 
+@pytest.mark.slow
 def test_recommend_treated_sets_ranks_by_mde():
     from supply_experiments.design.treated_selection import (
-        recommend_treated_sets, recommendations_frame)
+        recommend_treated_sets,
+        recommendations_frame,
+    )
 
     panel = make_synthetic_panel(seed=12, n_cities=25, n_days=400)
     stats = pd.DataFrame({
@@ -297,6 +269,7 @@ def test_recommend_treated_sets_ranks_by_mde():
     assert list(df["rank"]) == list(range(1, len(recs) + 1))
 
 
+@pytest.mark.slow
 def test_recommend_treated_sets_must_include_and_states():
     from supply_experiments.design.treated_selection import recommend_treated_sets
 

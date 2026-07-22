@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "supply-experiments"
+version = "1.0.2"
+description = "Geo-experimentation framework: synthetic control, SDID and permutation inference for city-level experiments"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.23",
+    "pandas>=1.5",
+    "scipy>=1.9",
+]
+
+[project.optional-dependencies]
+spark = ["pyspark>=3.4"]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "nbformat>=5.9",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["supply_experiments*"]
+
+[tool.setuptools.package-data]
+supply_experiments = ["py.typed"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: statistical calibration tests (effect recovery, A/A FPR) — slower, run in CI",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+# UP (pyupgrade) intencionalmente fora: modernizar List/Dict/Optional em todo o
+# código legado é cosmético e de baixo valor aqui; E/F/I/B cobrem bugs reais
+# (imports não usados, variáveis mortas, comparações erradas) e estilo de import.
+ignore = ["E501"]  # linhas longas em fórmulas matemáticas são mais legíveis inteiras
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # re-exports intencionais (superfície pública do pacote)
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = true

@@ -62,7 +62,7 @@ elig_sdf.write.format("delta").mode("overwrite") \\
 # =============================================================================
 nb([
 md("""# 02 — Controle fixo para DiD (com holdout temporal)
-Mudanças estruturais vs. versão anterior:
+Princípios de design:
 1. **Holdout temporal**: otimização roda nos primeiros 70% da janela; tendências
    paralelas são testadas **apenas nos 30% finais** (critério de aceite, nunca
    de otimização) — elimina pre-testing contamination.

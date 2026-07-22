@@ -1,29 +1,32 @@
-"""Certificado de calibração: método ANTIGO vs NOVO sob A/A (efeito nulo).
+"""Certificado de calibração: baseline ingênuo vs. este framework sob A/A (efeito nulo).
 
-ANTIGO: OLS y ~ 1 + group + post + group*post + DOW nas séries agregadas
-        (tratado-soma vs controle-soma), p-value do t clássico — o que o
-        experiments_results.ipynb original fazia.
-NOVO:   inferência por permutação in-space (Abadie) sobre SCM.
+BASELINE: OLS y ~ 1 + group + post + group*post + DOW nas séries agregadas
+          (tratado-soma vs controle-soma), p-value do t clássico — a
+          abordagem que qualquer time tenta primeiro.
+FRAMEWORK: inferência por permutação in-space (Abadie) sobre SCM.
 
 Sob o nulo, a taxa de rejeição deve ser ~α. Rodamos 120 experimentos A/A
 num painel sintético realista (fator comum + DOW + AR(1) diário).
 """
 
 import sys
+
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, "/home/claude/framework")
-from tests.test_core import make_synthetic_panel
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")  # evita UnicodeEncodeError (α, █) no console cp1252 do Windows
+
+from supply_experiments.synthetic import make_synthetic_panel
 from supply_experiments.calibration.aa import run_aa_calibration
 from supply_experiments.estimators.scm import fit_scm
 from supply_experiments.design.power import power_analysis
 
 
 # ---------------------------------------------------------------------------
-# Método ANTIGO (reprodução fiel do estimate_effect_ols do notebook original)
+# Baseline ingênuo: OLS agregado com t-test clássico
 # ---------------------------------------------------------------------------
-def old_ols_pvalue(dates, y_control, y_treated, start_date):
+def naive_ols_pvalue(dates, y_control, y_treated, start_date):
     from scipy.stats import t as t_dist
     y0, y1 = np.asarray(y_control, float), np.asarray(y_treated, float)
     T = len(y0)
@@ -58,8 +61,8 @@ def main():
     N_RUNS = 120
     T = len(panel.index)
 
-    # ---------------- A/A: método antigo -----------------------------------
-    old_rejections_05, old_rejections_10 = 0, 0
+    # ---------------- A/A: baseline ingênuo ---------------------------------
+    naive_rejections_05, naive_rejections_10 = 0, 0
     for _ in range(N_RUNS):
         pick = rng.choice(cities, size=12, replace=False).tolist()
         treated, control = pick[:2], pick[2:]
@@ -68,24 +71,24 @@ def main():
         dates = panel.index[sl]
         y_t = panel.aggregate(treated).to_numpy()[sl]
         y_c = panel.aggregate(control).to_numpy()[sl]
-        p = old_ols_pvalue(dates, y_c, y_t, panel.index[start].date())
-        old_rejections_05 += p <= 0.05
-        old_rejections_10 += p <= 0.10
+        p = naive_ols_pvalue(dates, y_c, y_t, panel.index[start].date())
+        naive_rejections_05 += p <= 0.05
+        naive_rejections_10 += p <= 0.10
 
     print("=" * 72)
     print("CERTIFICADO DE CALIBRAÇÃO — A/A (efeito verdadeiro = 0)")
     print("=" * 72)
     print(f"\nPainel sintético: 40 cidades, {T} dias, fator comum + DOW + AR(1)")
     print(f"Runs A/A: {N_RUNS} | pré={PRE}d, pós={POST}d, 2 tratadas\n")
-    print("MÉTODO ANTIGO (OLS agregado, t clássico — experiments_results.ipynb):")
-    print(f"  FPR @ α=0.05: {old_rejections_05 / N_RUNS:6.1%}   (esperado: 5%)")
-    print(f"  FPR @ α=0.10: {old_rejections_10 / N_RUNS:6.1%}   (esperado: 10%)")
+    print("BASELINE INGÊNUO (OLS agregado, t clássico):")
+    print(f"  FPR @ α=0.05: {naive_rejections_05 / N_RUNS:6.1%}   (esperado: 5%)")
+    print(f"  FPR @ α=0.10: {naive_rejections_10 / N_RUNS:6.1%}   (esperado: 10%)")
 
-    # ---------------- A/A: método novo --------------------------------------
+    # ---------------- A/A: este framework -----------------------------------
     aa = run_aa_calibration(panel, cities, fit_scm, PRE, POST,
                             n_runs=N_RUNS, n_treated=2, n_donors=15,
                             alpha=0.10, seed=7)
-    print("\nMÉTODO NOVO (SCM + permutação in-space):")
+    print("\nESTE FRAMEWORK (SCM + permutação in-space):")
     print(f"  FPR @ α=0.10: {aa.fpr:6.1%}   IC95% binomial [{aa.fpr_ci[0]:.1%}, {aa.fpr_ci[1]:.1%}]")
     print(f"  KS p-value (p-values ~ U(0,1)): {aa.ks_p_value:.3f}")
     print(f"  Viés mediano do ATT placebo: {aa.median_att_bias:+.2%}")
