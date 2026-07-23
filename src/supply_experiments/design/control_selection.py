@@ -37,42 +37,54 @@ def f_test_parallel_trends(
     y_control: np.ndarray,
     holidays: Optional[Sequence[str]] = None,
 ) -> Dict[str, float]:
-    """Teste F de interação tempo×grupo em séries normalizadas pela média."""
-    from scipy.stats import f as f_dist
+    """Teste HAC para tendência diferencial em séries normalizadas.
+
+    O nome é mantido por compatibilidade, mas o p-value agora vem de um teste
+    Wald/Newey-West (e não do F clássico iid). Para uma série diária, assumir
+    independência serial na revalidação do controle contradiz a premissa que
+    motivou o restante do framework.
+    """
+    from scipy.stats import norm
 
     ya = np.asarray(y_target, float)
     yb = np.asarray(y_control, float)
     T = len(ya)
+    if T != len(yb) or T != len(dates):
+        raise ValueError("dates, y_target e y_control devem ter o mesmo tamanho")
+    if T < 10:
+        raise ValueError("são necessários ao menos 10 dias para testar tendências")
     ya = ya / (np.mean(ya) or 1.0)
     yb = yb / (np.mean(yb) or 1.0)
 
-    y = np.concatenate([ya, yb])
+    # Regressão da diferença entre grupos: o coeficiente de tendência é
+    # exatamente a interação tempo×grupo do modelo empilhado original.
+    y = yb - ya
     t = np.arange(T, dtype=float)
     t = (t - t.mean()) / max(t.std(), 1.0)
-    group = np.concatenate([np.zeros(T), np.ones(T)])
-    tt = np.concatenate([t, t])
-    inter = group * tt
-
     dow = make_dow_dummies(dates)
-    dow2 = np.vstack([dow, dow])
-    blocks = [np.ones(2 * T), group, tt, inter] + [dow2[:, k] for k in range(dow2.shape[1])]
+    blocks = [np.ones(T), t] + [dow[:, k] for k in range(dow.shape[1])]
     if holidays:
         h = make_holiday_dummy(dates, holidays)
-        blocks.append(np.concatenate([h, h]))
-    X_u = np.column_stack(blocks)
-    X_r = np.delete(X_u, 3, axis=1)
+        blocks.append(h)
+    X = np.column_stack(blocks)
+    beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+    resid = y - X @ beta
 
-    def sse(X):
-        b, *_ = np.linalg.lstsq(X, y, rcond=None)
-        r = y - X @ b
-        return float(r @ r), b
-
-    sse_u, beta_u = sse(X_u)
-    sse_r, _ = sse(X_r)
-    df2 = max(2 * T - X_u.shape[1], 1)
-    F = max(sse_r - sse_u, 0.0) / (sse_u / df2)
-    p = float(f_dist.sf(F, 1, df2))
-    return {"F": float(F), "p_value": p, "coef_interaction": float(beta_u[3])}
+    # Newey-West com bandwidth automático conservador para série diária.
+    lag = max(1, int(np.floor(4.0 * (T / 100.0) ** (2.0 / 9.0))))
+    scores = X * resid[:, None]
+    meat = scores.T @ scores
+    for ell in range(1, min(lag, T - 1) + 1):
+        weight = 1.0 - ell / (lag + 1.0)
+        gamma = scores[ell:].T @ scores[:-ell]
+        meat += weight * (gamma + gamma.T)
+    xtx_inv = np.linalg.pinv(X.T @ X)
+    cov = (T / max(T - X.shape[1], 1)) * xtx_inv @ meat @ xtx_inv
+    se = float(np.sqrt(max(cov[1, 1], 0.0)))
+    z = float(beta[1] / se) if se > 0 else np.nan
+    p = float(2.0 * norm.sf(abs(z))) if np.isfinite(z) else np.nan
+    return {"F": float(z ** 2) if np.isfinite(z) else np.nan,
+            "p_value": p, "coef_interaction": float(beta[1])}
 
 
 def _subset_score(y_target: np.ndarray, y_sub: np.ndarray,

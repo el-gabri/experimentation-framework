@@ -34,6 +34,8 @@ def _ratio_and_var(num: pd.Series, den: pd.Series, block_days: int = 7) -> tuple
     Var(R) ≈ (1/D̄²) · Var_blocos(n_b − R·d_b) / B, onde blocos reduzem o efeito
     da autocorrelação intra-semana.
     """
+    if block_days < 1:
+        raise ValueError("block_days deve ser >= 1")
     n = num.to_numpy(float)
     d = den.to_numpy(float)
     mask = np.isfinite(n) & np.isfinite(d)
@@ -42,13 +44,15 @@ def _ratio_and_var(num: pd.Series, den: pd.Series, block_days: int = 7) -> tuple
         return np.nan, np.nan
     R = n.sum() / d.sum()
 
-    # B blocos cobrindo TODOS os dias (o último absorve o resto, em vez de
-    # descartar dias que não fecham um bloco de block_days — descartá-los
-    # deixaria R e a variância calculados sobre janelas diferentes).
-    B = max(len(n) // block_days, 2)
-    edges = [i * block_days for i in range(B)] + [len(n)]
-    nb = np.array([n[edges[i]:edges[i + 1]].sum() for i in range(B)])
-    db = np.array([d[edges[i]:edges[i + 1]].sum() for i in range(B)])
+    # Blocos que cobrem todos os dias, com o último absorvendo o resto. Com
+    # menos de dois blocos não existe variância temporal estimável: retornar
+    # NaN é mais seguro que inventar um bloco vazio e subestimar o SE.
+    starts = list(range(0, len(n), block_days))
+    B = len(starts)
+    if B < 2:
+        return float(R), np.nan
+    nb = np.array([n[start:start + block_days].sum() for start in starts])
+    db = np.array([d[start:start + block_days].sum() for start in starts])
     u = nb - R * db
     var_u = float(np.var(u, ddof=1))
     dbar = float(np.mean(db))
@@ -70,7 +74,8 @@ def ratio_did(
     roc, voc = _ratio_and_var(num_c[post_mask], den_c[post_mask], block_days)
 
     eff = (rot - rpt) - (roc - rpc)
-    var = np.nansum([vpt, vot, vpc, voc])
+    variances = np.array([vpt, vot, vpc, voc], dtype=float)
+    var = float(np.sum(variances)) if np.isfinite(variances).all() else np.nan
     se = float(np.sqrt(var)) if var > 0 else np.nan
     z = eff / se if se and se > 0 else np.nan
     p = float(2 * norm.sf(abs(z))) if np.isfinite(z) else np.nan

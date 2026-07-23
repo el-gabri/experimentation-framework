@@ -87,6 +87,7 @@ def load_city_panel(spark, date_start: str, date_end: str,
 
     gmv = wide("gmv").fillna(0.0)
     orders = wide("orders").fillna(0.0)
+    merchants = wide("merchants").fillna(0.0)
     rupt = wide("rupture_orders").fillna(0.0)
 
     panel = CityPanel(outcome=gmv,
@@ -94,16 +95,23 @@ def load_city_panel(spark, date_start: str, date_end: str,
                       denominators={"rupture_rate_order": orders})
 
     from supply_experiments.design.spillover import max_zero_run
-    stats = (
-        daily.groupby("city_norm")
-        .agg(avg_daily_gmv=("gmv", "mean"), sum_gmv=("gmv", "sum"),
-             avg_daily_orders=("orders", "mean"), avg_daily_merchants=("merchants", "mean"),
-             nonzero_days=("gmv", lambda s: int((s > 0).sum())),
-             total_orders=("orders", "sum"), total_ruptures=("rupture_orders", "sum"),
-             city_address=("city_address", "first"), state_address=("state_address", "first"))
-    )
+    # Métricas diárias precisam incluir dias sem pedido como zero. Calcular as
+    # médias diretamente em ``daily`` as transformava em médias condicionais a
+    # haver atividade, enviesando a elegibilidade para cidades intermitentes.
+    metadata = (daily.sort_values(["city_norm", "order_date"])
+                .groupby("city_norm")
+                .agg(city_address=("city_address", "first"),
+                     state_address=("state_address", "first")))
+    stats = metadata.reindex(gmv.columns)
+    stats.index.name = "city_norm"
+    stats["avg_daily_gmv"] = gmv.mean()
+    stats["sum_gmv"] = gmv.sum()
+    stats["avg_daily_orders"] = orders.mean()
+    stats["avg_daily_merchants"] = merchants.mean()
+    stats["nonzero_days"] = (gmv > 0).sum()
+    stats["total_orders"] = orders.sum()
+    stats["total_ruptures"] = rupt.sum()
     stats["rupture_rate"] = stats["total_ruptures"] / stats["total_orders"].replace(0, np.nan)
     stats["cv_gmv"] = gmv.std() / gmv.mean().replace(0, np.nan)
-    stats["max_zero_run"] = [max_zero_run(gmv[c].to_numpy()) if c in gmv.columns else 999
-                             for c in stats.index]
+    stats["max_zero_run"] = [max_zero_run(gmv[c].to_numpy()) for c in stats.index]
     return panel, stats

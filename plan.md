@@ -67,9 +67,8 @@ Prioridades: **P0** = bloqueia publicação pública · **P1** = correção/qual
 - [x] Testes estatísticos pesados marcados com `@pytest.mark.slow`
   (recuperação de efeito em loop, bootstrap null-calibrado, seleção de
   controle, pipeline fim-a-fim, recomendação de tratadas).
-- [ ] `make_notebooks.py` como fonte única verificada em CI (gerar e diffar
-  contra os `.ipynb` versionados) — não implementado nesta rodada; os
-  notebooks continuam sendo mantidos manualmente em paralelo ao gerador.
+- [x] `make_notebooks.py` como fonte única verificada em CI (gerar e diffar
+  contra os `.ipynb` versionados).
 
 ## 3. P1 — Refatoração estrutural (API) — implementado com escopo reduzido
 
@@ -157,7 +156,7 @@ Em ordem de retorno/custo:
 2. **Sensibilidade leave-one-donor-out**: reestimar o ATT removendo cada
    doadora com peso > 5%; reportar intervalo de estabilidade (Abadie 2021
    recomenda). Detecta contrafactuais apoiados numa única cidade.
-3. **Conformal para todos os estimadores** (hoje só ASCM ganha IC) + IC também
+3. **Conformal para todos os estimadores** (hoje SCM/SDID ganham IC) + IC também
    por permutação (inversão do teste de RMSPE-ratio).
 4. **Covariáveis no SCM** (V-weights de Abadie ou demeaned SCM de Ferman &
    Pinto 2021) — clima, feriados regionais, população.

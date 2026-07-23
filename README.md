@@ -41,7 +41,7 @@ THIS FRAMEWORK (SCM + in-space permutation):
   Median placebo ATT bias: +0.04%
 
 POWER CURVE (2 treated, 18 donors, 35 days, SCM):
-  δ=3% → 36% | δ=5% → 76% | δ=8% → 88% | δ=12% → 100%   (MDE@80% = 8%)
+  δ=3% → 20% | δ=5% → 68% | δ=8% → 92% | δ=12% → 100%   (MDE@80% = 8%)
 ```
 
 Reproduce with `python calibration_certificate.py`. The `05_aa_calibration`
@@ -85,7 +85,7 @@ notebooks/  (thin clients, ~30 lines of logic each)
 ├── 04_analyze_experiment.ipynb        # triangulation + persistence
 └── 05_aa_calibration.ipynb            # recurring certificate on real data
 
-tests/test_core.py            # 20 tests, incl. effect recovery and statistical calibration
+tests/test_core.py            # suíte do core, incl. effect recovery e calibração estatística
 ```
 
 ## Experiment lifecycle
@@ -93,7 +93,7 @@ tests/test_core.py            # 20 tests, incl. effect recovery and statistical 
 1. **Design** (`03_design_experiment`): proposed treated cities → donor pool
    cleaned of spillover → `power_analysis` estimates the MDE → `save_experiment`
    **refuses** the design if MDE > expected effect, the hypothesis is empty, the
-   decision rule is empty, or there are fewer than 8 donors.
+   decision rule is empty, or there are fewer than 9 donors at α=0.10.
 2. **Execution**: the intervention runs; nobody analyzes (anti-peeking raises
    `ValueError`).
 3. **Analysis** (`04_analyze_experiment`): SCM + ASCM + SDID with permutation
@@ -107,8 +107,9 @@ tests/test_core.py            # 20 tests, incl. effect recovery and statistical 
 - **Default α = 0.10 for permutation inference**: with J donors the minimum
   attainable p-value is 1/(J+1); with 15 donors that is 0.0625 — α = 0.05 would
   require ≥ 20 donors. Reports warn when the donor pool limits granularity.
-- **RMSPE-ratio as the primary statistic** (robust to placebos with poor
-  pre-period fit); p(|ATT|) is reported for transparency.
+- **RMSPE-ratio as the primary statistic**; with multiple treated cities, each
+  placebo is a donor group of the same size (Monte Carlo sampled when the
+  combination space is large). p(|ATT|) is reported for transparency.
 - **City-level DiD with outcomes normalized by the pre-period mean**: without
   this, within-FE removes level but not scale, and τ is dominated by the
   largest cities.

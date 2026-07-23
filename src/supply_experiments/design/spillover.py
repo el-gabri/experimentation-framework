@@ -32,18 +32,25 @@ def spillover_exclusions(
     """
     Retorna (candidatas_limpas, excluídas com motivo).
     Usa coordenadas (raio em km) e/ou lista de adjacência explícita (ex.: mesma
-    região metropolitana). Cidades sem coordenada não são excluídas por raio,
-    mas são reportadas.
+    região metropolitana). Cidades sem coordenada permanecem elegíveis, pois o
+    raio não pode ser avaliado; complete ``coords`` antes de interpretar a
+    exclusão como uma garantia geográfica completa.
     """
+    if radius_km < 0:
+        raise ValueError("radius_km deve ser >= 0")
     excluded: List[Tuple[str, str, float]] = []
     clean: List[str] = []
     adjacency = adjacency or {}
+    treated_set = set(treated)
     adj_set: Set[str] = set()
     for t in treated:
         adj_set |= set(adjacency.get(t, set()))
+        # Adjacência é simétrica: aceitar A -> B e B -> A evita que a
+        # segurança dependa da orientação do input.
+        adj_set |= {city for city, neighbors in adjacency.items() if t in neighbors}
 
     for c in candidates:
-        if c in set(treated):
+        if c in treated_set:
             continue
         if c in adj_set:
             excluded.append((c, "adjacente (região metropolitana)", np.nan))
@@ -74,6 +81,11 @@ class EligibilityCriteria:
 def eligible_cities(stats: pd.DataFrame, crit: EligibilityCriteria) -> pd.DataFrame:
     """stats: DataFrame com colunas nonzero_days, avg_daily_gmv, avg_daily_merchants,
     avg_daily_orders, max_zero_run, cv_gmv (indexado por city_norm)."""
+    required = {"nonzero_days", "avg_daily_gmv", "avg_daily_merchants",
+                "avg_daily_orders", "max_zero_run", "cv_gmv"}
+    missing = sorted(required - set(stats.columns))
+    if missing:
+        raise ValueError(f"stats sem colunas obrigatórias de elegibilidade: {missing}")
     m = (
         (stats["nonzero_days"] >= crit.min_nonzero_days)
         & (stats["avg_daily_gmv"] >= crit.min_avg_daily_gmv)
@@ -81,10 +93,8 @@ def eligible_cities(stats: pd.DataFrame, crit: EligibilityCriteria) -> pd.DataFr
                                                 crit.max_avg_daily_merchants))
         & (stats["avg_daily_orders"] >= crit.min_avg_daily_orders)
     )
-    if "max_zero_run" in stats.columns:
-        m &= stats["max_zero_run"] <= crit.max_zero_run_days
-    if "cv_gmv" in stats.columns:
-        m &= stats["cv_gmv"] <= crit.max_cv
+    m &= stats["max_zero_run"] <= crit.max_zero_run_days
+    m &= stats["cv_gmv"] <= crit.max_cv
     return stats.loc[m].copy()
 
 

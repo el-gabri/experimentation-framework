@@ -7,9 +7,20 @@ hipótese, sem regra de decisão, ou sem poder estatístico suficiente de virar
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Dict, List, Optional
+
+_VALID_STATUSES = {"draft", "approved", "running", "completed", "analyzed", "cancelled"}
+
+
+def minimum_donors_for_alpha(alpha: float) -> int:
+    """Número de doadoras necessário para o p-value de permutação alcançar α."""
+    if not (0.0 < alpha < 1.0):
+        raise ValueError(f"alpha deve estar em (0, 1): {alpha}")
+    # 1 / (J + 1) <= alpha. A tolerância evita ceil(9.000000000000002).
+    return max(2, math.ceil((1.0 / alpha) - 1.0 - 1e-12))
 
 
 @dataclass
@@ -33,8 +44,14 @@ class ExperimentRecord:
     created_by: str = ""
     config_json: str = "{}"
 
-    def validate_for_approval(self) -> List[str]:
+    def validate_for_approval(self, alpha: float = 0.10) -> List[str]:
         problems = []
+        if self.status not in _VALID_STATUSES:
+            problems.append(f"status inválido: {self.status!r}")
+        if self.start_date > self.end_date:
+            problems.append("start_date é posterior a end_date")
+        if self.pre_window_days <= 0:
+            problems.append("pre_window_days deve ser > 0 para um experimento")
         if not self.hypothesis.strip():
             problems.append("hypothesis vazia — pré-registro exige hipótese explícita")
         if not self.decision_rule.strip():
@@ -47,9 +64,21 @@ class ExperimentRecord:
                 f"({self.expected_effect:.1%}): experimento sem poder. Aumente cidades/duração.")
         if not self.treated_units:
             problems.append("sem treated_units")
-        if len(self.control_units) < 8:
-            problems.append(f"só {len(self.control_units)} controles/doadoras "
-                            "(mínimo 8 p/ granularidade de p-value)")
+        treated_cities = {str(u.get("city_norm", "")).strip().upper()
+                          for u in self.treated_units if u.get("city_norm")}
+        control_cities = {str(u.get("city_norm", "")).strip().upper()
+                          for u in self.control_units if u.get("city_norm")}
+        if len(treated_cities) != len(self.treated_units):
+            problems.append("treated_units contém city_norm ausente ou duplicado")
+        if len(control_cities) != len(self.control_units):
+            problems.append("control_units contém city_norm ausente ou duplicado")
+        overlap = treated_cities & control_cities
+        if overlap:
+            problems.append(f"cidades tratadas também aparecem como doadoras: {sorted(overlap)}")
+        min_donors = minimum_donors_for_alpha(alpha)
+        if len(control_cities) < min_donors:
+            problems.append(f"só {len(control_cities)} controles/doadoras "
+                            f"(mínimo {min_donors} para α={alpha:.3g})")
         return problems
 
 
@@ -74,6 +103,18 @@ def ensure_registry(spark, table: str) -> None:
     schema = table.rsplit(".", 1)[0]
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema}")
     spark.sql(REGISTRY_DDL.format(table=table))
+
+
+def _latest_by_experiment(spark, table: str):
+    """Estado corrente de um registry append-only (uma linha por experimento)."""
+    from pyspark.sql import functions as F
+    from pyspark.sql.window import Window
+
+    latest = Window.partitionBy("experiment_id").orderBy(F.col("created_at").desc())
+    return (spark.table(table)
+            .withColumn("_registry_rank", F.row_number().over(latest))
+            .where(F.col("_registry_rank") == 1)
+            .drop("_registry_rank"))
 
 
 def _registry_spark_schema():
@@ -111,9 +152,11 @@ def _registry_spark_schema():
 
 
 def save_experiment(spark, table: str, rec: ExperimentRecord,
-                    require_approval_checks: bool = True) -> None:
+                    require_approval_checks: bool = True, alpha: float = 0.10) -> None:
+    if rec.status not in _VALID_STATUSES:
+        raise ValueError(f"status inválido: {rec.status!r}")
     if require_approval_checks and rec.status in ("approved", "running"):
-        problems = rec.validate_for_approval()
+        problems = rec.validate_for_approval(alpha=alpha)
         if problems:
             raise ValueError("Pré-registro reprovado:\n  - " + "\n  - ".join(problems))
     row = {
@@ -135,9 +178,9 @@ def save_experiment(spark, table: str, rec: ExperimentRecord,
 def load_experiment(spark, table: str, experiment_id: str) -> ExperimentRecord:
     from pyspark.sql import functions as F
 
-    rows = (spark.table(table)
+    rows = (_latest_by_experiment(spark, table)
             .where(F.col("experiment_id") == F.lit(experiment_id))
-            .orderBy("created_at", ascending=False).limit(1).collect())
+            .limit(1).collect())
     if not rows:
         raise ValueError(f"experiment_id não encontrado: {experiment_id}")
     r = rows[0].asDict(recursive=True)
@@ -160,10 +203,14 @@ def load_fixed_control(spark, table: str,
                        name: str = "fixed_control_groceries") -> Optional[List[str]]:
     """Cidades do controle fixo mais recente registrado; None se não houver."""
     from pyspark.sql import functions as F
+    from pyspark.sql.window import Window
+
     ensure_registry(spark, table)
-    rows = (spark.table(table)
-            .where((F.col("name") == name) & (F.col("status") == "approved"))
-            .orderBy("created_at", ascending=False).limit(1).collect())
+    current = _latest_by_experiment(spark, table).where(F.col("name") == name)
+    latest = (current.withColumn(
+        "_fixed_rank", Window.partitionBy("name").orderBy(F.col("created_at").desc())
+    ).where(F.col("_fixed_rank") == 1).drop("_fixed_rank"))
+    rows = latest.where(F.col("status") == "approved").limit(1).collect()
     if not rows:
         return None
     r = rows[0].asDict(recursive=True)
@@ -175,8 +222,22 @@ def active_blocked_cities(spark, table: str, merchant_type: str = "Groceries") -
     """Cidades bloqueadas: tratadas de experimentos ativos (não podem ser nada)
     e controles ativos (não podem ser tratadas)."""
     from pyspark.sql import functions as F
+    from pyspark.sql.window import Window
+
     ensure_registry(spark, table)  # primeira execução: registry ainda não existe
-    df = (spark.table(table)
+    current = _latest_by_experiment(spark, table)
+
+    # O controle fixo é uma configuração versionada por nome, não um conjunto
+    # de experimentos concorrentes. Só a versão mais recente deve bloquear uma
+    # cidade; as anteriores permanecem no histórico auditável.
+    is_fixed = ((F.col("design_method") == "did")
+                & (F.size(F.col("treated_units")) == 0))
+    fixed = current.where(is_fixed)
+    latest_fixed = (fixed.withColumn(
+        "_fixed_rank", Window.partitionBy("name").orderBy(F.col("created_at").desc())
+    ).where(F.col("_fixed_rank") == 1).drop("_fixed_rank"))
+    regular = current.where(~is_fixed)
+    df = (regular.unionByName(latest_fixed)
           .where(F.col("merchant_type") == merchant_type)
           .where(F.col("status").isin(["approved", "running"])))
 

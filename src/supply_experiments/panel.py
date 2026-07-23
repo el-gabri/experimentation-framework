@@ -57,6 +57,14 @@ class CityPanel:
         idx = self.outcome.index
         if not isinstance(idx, pd.DatetimeIndex):
             raise TypeError("outcome.index deve ser DatetimeIndex")
+        if idx.empty:
+            raise ValueError("outcome não pode ser vazio")
+        if not idx.is_unique:
+            raise ValueError("outcome.index deve ter datas únicas")
+        if not idx.is_monotonic_increasing:
+            raise ValueError("outcome.index deve estar em ordem cronológica")
+        if not self.outcome.columns.is_unique:
+            raise ValueError("outcome.columns deve ter cidades únicas")
         full = pd.date_range(idx.min(), idx.max(), freq="D")
         if len(full) != len(idx):
             n_missing = len(full) - len(idx)
@@ -72,6 +80,43 @@ class CityPanel:
             )
             self.outcome = self.outcome.reindex(full).fillna(self.fill_value)
         self.outcome = self.outcome.astype(float)
+        kpis = set(self.numerators) | set(self.denominators)
+        if set(self.numerators) != set(self.denominators):
+            missing_num = sorted(set(self.denominators) - set(self.numerators))
+            missing_den = sorted(set(self.numerators) - set(self.denominators))
+            raise ValueError(
+                f"KPIs sem par numerador/denominador: numeradores ausentes={missing_num}, "
+                f"denominadores ausentes={missing_den}"
+            )
+        for kpi in kpis:
+            num = self._align_ratio_frame(self.numerators[kpi], kpi, "numerador", full)
+            den = self._align_ratio_frame(self.denominators[kpi], kpi, "denominador", full)
+            if not num.columns.equals(den.columns):
+                raise ValueError(f"KPI '{kpi}' tem cidades diferentes em numerador e denominador")
+            self.numerators[kpi] = num
+            self.denominators[kpi] = den
+
+    def _align_ratio_frame(self, frame: pd.DataFrame, kpi: str, role: str,
+                           full_index: pd.DatetimeIndex) -> pd.DataFrame:
+        if not isinstance(frame, pd.DataFrame):
+            raise TypeError(f"{role} do KPI '{kpi}' deve ser DataFrame")
+        if not isinstance(frame.index, pd.DatetimeIndex):
+            raise TypeError(f"{role} do KPI '{kpi}' deve ter DatetimeIndex")
+        if not frame.index.is_unique or not frame.index.is_monotonic_increasing:
+            raise ValueError(f"{role} do KPI '{kpi}' deve ter datas únicas e ordenadas")
+        if not frame.columns.is_unique:
+            raise ValueError(f"{role} do KPI '{kpi}' deve ter cidades únicas")
+        unknown = frame.columns.difference(self.outcome.columns)
+        if len(unknown):
+            raise ValueError(f"{role} do KPI '{kpi}' contém cidades fora do outcome: {list(unknown)}")
+        if not frame.index.equals(full_index):
+            warnings.warn(
+                f"CityPanel: {role} do KPI '{kpi}' foi alinhado ao índice do outcome; "
+                f"datas ausentes receberam fill_value={self.fill_value}.",
+                stacklevel=3,
+            )
+            frame = frame.reindex(full_index).fillna(self.fill_value)
+        return frame.astype(float)
 
     @property
     def cities(self) -> List[str]:
@@ -87,6 +132,7 @@ class CityPanel:
             outcome=self.outcome[cities].copy(),
             numerators={k: v[[c for c in cities if c in v.columns]].copy() for k, v in self.numerators.items()},
             denominators={k: v[[c for c in cities if c in v.columns]].copy() for k, v in self.denominators.items()},
+            fill_value=self.fill_value,
         )
 
     def aggregate(self, cities: Sequence[str], weights: Optional[Dict[str, float]] = None) -> pd.Series:
@@ -101,8 +147,12 @@ class CityPanel:
 
     def ratio_series(self, kpi: str, cities: Sequence[str], weights: Optional[Dict[str, float]] = None) -> pd.Series:
         """Razão de somas diária (numerador agregado / denominador agregado)."""
+        if kpi not in self.numerators:
+            raise KeyError(f"KPI de razão inexistente: {kpi}")
         num, den = self.numerators[kpi], self.denominators[kpi]
-        cities = [c for c in cities if c in num.columns]
+        cities = [c for c in cities if c in num.columns and c in den.columns]
+        if not cities:
+            raise ValueError(f"Nenhuma cidade do grupo tem dados para o KPI '{kpi}'")
         if weights:
             w = _normalize_weights({c: weights.get(c, 0.0) for c in cities})
             n = sum(num[c] * w[c] for c in cities if w.get(c, 0) > 0)

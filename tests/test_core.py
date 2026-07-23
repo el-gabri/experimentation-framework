@@ -9,8 +9,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from supply_experiments.calibration.aa import run_aa_calibration
 from supply_experiments.design.control_selection import select_fixed_control
-from supply_experiments.design.spillover import max_zero_run, spillover_exclusions
+from supply_experiments.design.spillover import (
+    EligibilityCriteria,
+    eligible_cities,
+    max_zero_run,
+    spillover_exclusions,
+)
 from supply_experiments.estimators.ascm import fit_ascm
 from supply_experiments.estimators.did import fit_did_panel
 from supply_experiments.estimators.scm import fit_scm
@@ -18,7 +24,8 @@ from supply_experiments.estimators.sdid import fit_sdid
 from supply_experiments.inference.bootstrap import wild_cluster_bootstrap
 from supply_experiments.inference.conformal import conformal_inference
 from supply_experiments.inference.permutation import placebo_inference
-from supply_experiments.metrics import ratio_did
+from supply_experiments.io.registry import ExperimentRecord, minimum_donors_for_alpha
+from supply_experiments.metrics import _ratio_and_var, ratio_did
 from supply_experiments.panel import CityPanel, ExperimentWindow
 from supply_experiments.reporting import analyze_experiment, benjamini_hochberg
 from supply_experiments.synthetic import make_synthetic_panel
@@ -100,6 +107,54 @@ def test_placebo_pvalue_small_under_effect():
     assert inf.p_value <= 0.10
 
 
+def test_group_placebos_match_number_of_treated_cities():
+    panel = make_synthetic_panel(seed=61, n_cities=14, treat_effect=0.10,
+                                 treated=["CITY_02", "CITY_05"], treat_start_idx=300)
+    args = split_panel(panel, ["CITY_02", "CITY_05"])
+    inf = placebo_inference(fit_scm, *args, n_treated_units=2,
+                            max_group_placebos=20, seed=7)
+    assert 8 <= inf.n_placebos <= 20
+    assert "grupos de 2" in inf.note
+    assert np.isfinite(inf.p_value)
+
+
+def test_group_placebos_pass_treated_count_to_sdid():
+    panel = make_synthetic_panel(seed=62, n_cities=12, treat_effect=0.05,
+                                 treated=["CITY_01", "CITY_03"], treat_start_idx=300)
+    args = split_panel(panel, ["CITY_01", "CITY_03"])
+    seen = []
+
+    def recording_sdid(*fit_args, n_treated_units=1):
+        seen.append(n_treated_units)
+        return fit_sdid(*fit_args, n_treated_units=n_treated_units)
+
+    placebo_inference(recording_sdid, *args, n_treated_units=2,
+                      max_group_placebos=5, seed=7)
+    assert seen and set(seen) == {2}
+
+
+def test_failed_real_fit_does_not_report_significant_permutation_pvalue():
+    inf = placebo_inference(
+        fit_scm,
+        np.zeros(12), np.ones((12, 3)),
+        np.ones(4), np.ones((4, 3)), ["a", "b", "c"],
+    )
+    assert np.isnan(inf.p_value)
+    assert "Ajuste real falhou" in inf.note
+
+
+@pytest.mark.slow
+def test_aa_calibration_supports_multiple_treated_cities():
+    panel = make_synthetic_panel(seed=63, n_cities=16, n_days=380)
+    aa = run_aa_calibration(
+        panel, panel.cities, fit_scm, pre_days=120, post_days=30,
+        n_runs=12, n_treated=2, n_donors=8, min_valid_runs=10,
+        max_group_placebos=10,
+    )
+    assert aa.n_runs == 12
+    assert aa.details["n_placebos"].between(8, 10).all()
+
+
 @pytest.mark.slow
 def test_placebo_pvalue_large_under_null():
     ps = []
@@ -170,6 +225,12 @@ def test_ratio_did_detects_rate_shift():
     assert r.p_value < 0.01
 
 
+def test_ratio_variance_requires_two_nonempty_blocks():
+    ratio, variance = _ratio_and_var(pd.Series([1.0] * 5), pd.Series([10.0] * 5), block_days=7)
+    assert ratio == 0.1
+    assert np.isnan(variance)
+
+
 def test_bh_correction():
     sig = benjamini_hochberg({"a": 0.001, "b": 0.04, "c": 0.90}, q=0.10)
     assert sig["a"] and not sig["c"]
@@ -187,8 +248,36 @@ def test_spillover_radius_and_adjacency():
     assert "OSASCO" in reasons
 
 
+def test_spillover_adjacency_is_symmetric():
+    clean, _ = spillover_exclusions(
+        ["GUARULHOS"], ["OSASCO"], {},
+        adjacency={"OSASCO": {"GUARULHOS"}},
+    )
+    assert clean == []
+
+
+def test_eligibility_requires_quality_columns():
+    stats = pd.DataFrame({"nonzero_days": [100], "avg_daily_gmv": [20_000.0]})
+    with pytest.raises(ValueError, match="colunas obrigatórias"):
+        eligible_cities(stats, EligibilityCriteria())
+
+
 def test_max_zero_run():
     assert max_zero_run(np.array([1, 0, 0, 0, 2, 0])) == 3
+
+
+def test_registry_gate_matches_permutation_granularity():
+    record = ExperimentRecord(
+        experiment_id="exp", name="teste", hypothesis="hipótese", status="approved",
+        design_method="scm", primary_kpi="gmv", guardrail_kpis=[],
+        start_date=pd.Timestamp("2026-01-10").date(), end_date=pd.Timestamp("2026-01-20").date(),
+        pre_window_days=30,
+        treated_units=[{"city_norm": "A"}],
+        control_units=[{"city_norm": f"C{i}"} for i in range(8)],
+        mde_estimated=0.01, expected_effect=0.05, decision_rule="decidir",
+    )
+    assert minimum_donors_for_alpha(0.10) == 9
+    assert any("mínimo 9" in p for p in record.validate_for_approval())
 
 
 @pytest.mark.slow

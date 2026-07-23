@@ -121,6 +121,7 @@ def analyze_experiment(
     agreement_tol: float = 0.05,
     today: Optional[date] = None,
     allow_interim: bool = False,
+    max_group_placebos: Optional[int] = 30,
 ) -> ExperimentReport:
     warnings: List[str] = []
     today = today or date.today()
@@ -143,7 +144,11 @@ def analyze_experiment(
     # ESTIMATORS têm assinaturas extras distintas (ex.: n_treated_units do SDID)
     # além dos 5 args posicionais comuns — daí o Callable genérico.
     for name, fn in ESTIMATORS.items():
-        inf = placebo_inference(fn, *pslice.as_args())
+        fit_kwargs = {"n_treated_units": len(treated)} if name == "sdid" else {}
+        inf = placebo_inference(
+            fn, *pslice.as_args(), fit_kwargs=fit_kwargs,
+            n_treated_units=len(treated), max_group_placebos=max_group_placebos,
+        )
         fit = inf.real_fit  # já ajustado dentro de placebo_inference — evita refit
         assert fit is not None, f"placebo_inference não retornou real_fit para {name}"
         ci = None
@@ -151,7 +156,7 @@ def analyze_experiment(
             try:
                 y_pre, Yd_pre, y_post, Yd_post, names = pslice.as_args()
                 conf = conformal_inference(fn, y_pre, Yd_pre, y_post, Yd_post, names,
-                                           alpha=alpha)
+                                           alpha=alpha, fit_kwargs=fit_kwargs)
                 ci = (conf.ci_lower_pct, conf.ci_upper_pct)
             except Exception as e:
                 warnings.append(f"Conformal falhou p/ {name}: {e}")
@@ -176,13 +181,21 @@ def analyze_experiment(
     # guardrails de razão (método delta) + BH
     g_rows = []
     for kpi in guardrail_kpis:
-        if kpi not in panel.numerators:
+        if kpi not in panel.numerators or kpi not in panel.denominators:
             warnings.append(f"Guardrail '{kpi}' sem numerador/denominador no painel — pulado")
             continue
-        nt = panel.numerators[kpi][list(treated)].sum(axis=1)
-        dt = panel.denominators[kpi][list(treated)].sum(axis=1)
-        nc = panel.numerators[kpi][donors].sum(axis=1)
-        dc = panel.denominators[kpi][donors].sum(axis=1)
+        num, den = panel.numerators[kpi], panel.denominators[kpi]
+        missing = [c for c in list(treated) + list(donors)
+                   if c not in num.columns or c not in den.columns]
+        if missing:
+            warnings.append(
+                f"Guardrail '{kpi}' sem dados para cidades {sorted(set(missing))} — pulado"
+            )
+            continue
+        nt = num[list(treated)].sum(axis=1)
+        dt = den[list(treated)].sum(axis=1)
+        nc = num[donors].sum(axis=1)
+        dc = den[donors].sum(axis=1)
         r = ratio_did(nt, dt, nc, dc, pre_mask, post_mask)
         g_rows.append({"kpi": kpi, "effect_abs": r.effect_abs, "effect_rel": r.effect_rel,
                        "se": r.se, "p_value": r.p_value})

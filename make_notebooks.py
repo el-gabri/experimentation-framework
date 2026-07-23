@@ -1,10 +1,17 @@
-"""Gera os 4 notebooks Databricks finos (clientes do pacote supply_experiments)."""
+"""Gera os 5 notebooks Databricks finos (clientes do pacote supply_experiments)."""
+
+import hashlib
 
 import nbformat as nbf
 
 
 def nb(cells, path):
     n = nbf.v4.new_notebook()
+    # nbformat gera IDs aleatórios por padrão; IDs derivados do conteúdo tornam
+    # a geração reprodutível e permitem que a CI detecte deriva real via diff.
+    for position, cell in enumerate(cells):
+        identity = f"{path}:{position}:{cell.cell_type}:{cell.source}".encode("utf-8")
+        cell["id"] = hashlib.sha256(identity).hexdigest()[:12]
     n.cells = cells
     n.metadata = {"language_info": {"name": "python"},
                   "application/vnd.databricks.v1+notebook": {"language": "python"}}
@@ -23,7 +30,7 @@ md("""# 01 — ETL: painel de cidades e snapshots
 Cliente fino do pacote `supply_experiments`. Toda a lógica (filtros da base de
 pedidos, normalização de cidades, estatísticas de elegibilidade) vive no pacote
 — **uma única implementação**, testada, em vez das 4 cópias divergentes anteriores."""),
-py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-1.0.2-py3-none-any.whl --quiet --force-reinstall --no-deps
+py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-1.0.3-py3-none-any.whl --quiet --force-reinstall --no-deps
 dbutils.library.restartPython()"""),
 py("""from supply_experiments.spark_io import load_city_panel, TABLES
 from supply_experiments.design.spillover import EligibilityCriteria, eligible_cities
@@ -68,7 +75,7 @@ Princípios de design:
    de otimização) — elimina pre-testing contamination.
 2. **p-value fora do score**: score = correlação + forma + região + ruptura.
 3. **Target limpo**: Brasil excluindo o próprio controle e tratadas ativas."""),
-py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-1.0.2-py3-none-any.whl --quiet --force-reinstall --no-deps
+py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-1.0.3-py3-none-any.whl --quiet --force-reinstall --no-deps
 dbutils.library.restartPython()"""),
 py("""from supply_experiments.spark_io import (load_city_panel, TABLES,
                                           active_blocked_cities, NATIONAL_HOLIDAYS)
@@ -140,7 +147,7 @@ Fluxo: tratadas propostas → exclusão de spillover no donor pool → **anális
 poder por simulação** → só registra como `approved` se MDE ≤ efeito esperado e
 pré-registro completo (hipótese + regra de decisão). O `save_experiment` **recusa**
 registros que não cumpram o contrato."""),
-py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-1.0.2-py3-none-any.whl --quiet --force-reinstall --no-deps
+py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-1.0.3-py3-none-any.whl --quiet --force-reinstall --no-deps
 dbutils.library.restartPython()"""),
 py("""from supply_experiments.spark_io import (load_city_panel, TABLES,
                                           active_blocked_cities, ExperimentRecord,
@@ -235,11 +242,12 @@ print("Experimento registrado:", rec.experiment_id)"""),
 nb([
 md("""# 04 — Análise de experimento (triangulação)
 - **Anti-peeking estrutural**: `analyze_experiment` recusa análise antes de `end_date`.
-- SCM + ASCM + SDID com p-values de **permutação**; IC **conformal** no ASCM;
+- SCM + ASCM + SDID com p-values de **permutação**; IC **conformal** no SCM
+  (ou SDID, via configuração);
   DiD painel com **wild cluster bootstrap** se houver controle fixo.
 - Guardrails de razão via **método delta** + correção **Benjamini-Hochberg**.
 - Veredito de triangulação: CONCORDANTE / PARCIAL / DIVERGENTE."""),
-py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-1.0.2-py3-none-any.whl --quiet --force-reinstall --no-deps
+py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-1.0.3-py3-none-any.whl --quiet --force-reinstall --no-deps
 dbutils.library.restartPython()"""),
 py("""from supply_experiments.spark_io import (load_city_panel, TABLES, load_experiment,
                                           NATIONAL_HOLIDAYS)
@@ -314,7 +322,7 @@ md("""# 05 — Calibração A/A (certificado do framework)
 Job recorrente (e obrigatório após qualquer mudança de estimador): roda N
 experimentos nulos em dados históricos reais e verifica FPR ≈ α, p-values
 uniformes e viés ≈ 0. Persiste o certificado em tabela auditável."""),
-py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-1.0.2-py3-none-any.whl --quiet --force-reinstall --no-deps
+py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-1.0.3-py3-none-any.whl --quiet --force-reinstall --no-deps
 dbutils.library.restartPython()"""),
 py("""from supply_experiments.spark_io import load_city_panel, TABLES
 from supply_experiments.calibration.aa import run_aa_calibration

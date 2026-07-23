@@ -47,6 +47,7 @@ def run_aa_calibration(
     fit_kwargs: Optional[dict] = None,
     min_valid_runs: int = 100,
     min_ks_p_value: float = 0.01,
+    max_group_placebos: Optional[int] = 30,
 ) -> AACalibration:
     from scipy.stats import beta as beta_dist
     from scipy.stats import kstest
@@ -54,17 +55,28 @@ def run_aa_calibration(
     rng = np.random.default_rng(seed)
     eligible = [c for c in eligible if c in panel.cities]
     T = len(panel.index)
+    if n_treated < 1:
+        raise ValueError("n_treated deve ser >= 1")
+    if n_donors < 2:
+        raise ValueError("n_donors deve ser >= 2")
+    if len(eligible) < n_treated + n_donors:
+        raise ValueError(
+            f"Elegíveis insuficientes: precisa de {n_treated + n_donors}, "
+            f"recebeu {len(eligible)}"
+        )
+    if T < pre_days + post_days:
+        raise ValueError(f"Histórico insuficiente: precisa de >= {pre_days + post_days} dias")
 
     rows: List[dict] = []
     for run in range(n_runs):
-        cities = rng.choice(eligible, size=min(n_treated + n_donors, len(eligible)),
-                            replace=False).tolist()
+        cities = rng.choice(eligible, size=n_treated + n_donors, replace=False).tolist()
         treated, donors = cities[:n_treated], cities[n_treated:]
         start = int(rng.integers(pre_days, T - post_days))
         try:
             r = simulate_once(panel, treated, donors, fit_fn, start,
                               pre_days, post_days, delta=0.0, alpha=alpha,
-                              fit_kwargs=fit_kwargs)
+                              fit_kwargs=fit_kwargs,
+                              max_group_placebos=max_group_placebos)
         except Exception as e:  # pragma: no cover
             rows.append({"run": run, "p_value": np.nan, "reject": False, "error": str(e)})
             continue

@@ -71,6 +71,7 @@ def simulate_once(
     fit_kwargs: Optional[dict] = None,
     seasonal_effect: bool = False,
     rng: Optional[np.random.Generator] = None,
+    max_group_placebos: Optional[int] = 10,
 ) -> Dict:
     """Um experimento placebo com efeito injetado δ (multiplicativo)."""
     donors = [d for d in donors if d not in set(treated)]
@@ -92,6 +93,8 @@ def simulate_once(
     inf = placebo_inference(
         fit_fn, y_pre, Yd[pre_sl], y_post, Yd[post_sl], list(donors),
         fit_kwargs=fit_kwargs or {},
+        n_treated_units=len(treated),
+        max_group_placebos=max_group_placebos,
     )
     return {
         "delta": delta, "start_idx": start_idx,
@@ -113,6 +116,7 @@ def power_analysis(
     alpha: float = 0.10,
     seed: int = 42,
     fit_kwargs: Optional[dict] = None,
+    max_group_placebos: Optional[int] = 10,
 ) -> PowerResult:
     """
     alpha default 0.10: com poucos placebos a granularidade mínima do p-value é
@@ -127,7 +131,8 @@ def power_analysis(
         for s in starts:
             rows.append(simulate_once(panel, treated, donors, fit_fn, s,
                                       pre_days, post_days, float(delta), alpha,
-                                      fit_kwargs, seasonal_effect=True, rng=rng))
+                                      fit_kwargs, seasonal_effect=True, rng=rng,
+                                      max_group_placebos=max_group_placebos))
     df = pd.DataFrame(rows)
     power = df.groupby("delta")["reject"].mean().to_dict()
     fpr = float(power.get(0.0, np.nan))

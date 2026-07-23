@@ -16,6 +16,10 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check src tests
       - run: mypy src
+      - name: Notebooks são derivados de make_notebooks.py
+        run: |
+          python make_notebooks.py
+          git diff --exit-code -- notebooks
 
   test:
     runs-on: ubuntu-latest

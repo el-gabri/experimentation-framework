@@ -42,7 +42,7 @@ from supply_experiments.panel import CityPanel, ExperimentWindow, PanelSlice
 from supply_experiments.reporting import ExperimentReport, analyze_experiment
 from supply_experiments.synthetic import make_synthetic_panel
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 __all__ = [
     "CityPanel", "ExperimentWindow", "PanelSlice",

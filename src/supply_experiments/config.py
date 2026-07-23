@@ -27,7 +27,7 @@ class RunConfig:
     alpha: float = 0.10             # ver README "Key statistical design decisions"
     fdr_q: float = 0.10             # FDR dos guardrails (Benjamini-Hochberg)
     agreement_tol: float = 0.05     # spread máximo de ATT para veredito CONCORDANTE
-    min_donors: int = 8             # mínimo de doadoras exigido no pré-registro
+    min_donors: int = 9             # mínimo de doadoras exigido no pré-registro a α=0.10
 
     # design geográfico
     radius_km: float = 40.0         # raio de exclusão por spillover

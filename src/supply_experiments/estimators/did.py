@@ -1,6 +1,6 @@
 """DiD em painel de cidades (nível de unidade, não agregado).
 
-y_it = α_i + γ_t(dow, feriado, tendência) + τ·(Treated_i × Post_t) + ε_it
+y_it = α_i + γ_t + τ·(Treated_i × Post_t) + ε_it
 
 Estimado via within-transformation (FE de cidade) + OLS. A inferência NÃO usa
 os SEs clássicos deste OLS (inválidos com autocorrelação e poucos clusters):
@@ -33,23 +33,20 @@ def _build_design(long: pd.DataFrame, treated: set, start_date, holidays: Option
     d["treated"] = d["city"].isin(treated).astype(float)
     d["post"] = (d["date"].dt.date >= start_date).astype(float)
     d["tp"] = d["treated"] * d["post"]
+    # Com efeitos fixos de data, DOW, feriado, tendência e o próprio ``post``
+    # são colineares. Mantemos a assinatura por compatibilidade, mas o único
+    # regressor identificado é a interação tratado × pós.
+    return d, d[["tp"]].to_numpy(float), ["tp"]
 
-    # dummies de tempo: dow + feriado + tendência linear + post
-    dow = pd.get_dummies(d["date"].dt.dayofweek, prefix="dow", drop_first=True).astype(float)
-    t_rel = (d["date"] - d["date"].min()).dt.days.astype(float)
-    t_rel = (t_rel - t_rel.mean()) / max(t_rel.std(), 1.0)
-    cols = [d["post"].to_numpy(), t_rel.to_numpy()]
-    names = ["post", "trend"]
-    for c in dow.columns:
-        cols.append(dow[c].to_numpy())
-        names.append(c)
-    if holidays:
-        hs = set(pd.to_datetime(list(holidays)).date)
-        cols.append(d["date"].dt.date.isin(hs).astype(float).to_numpy())
-        names.append("holiday")
-    X = np.column_stack([d["tp"].to_numpy()] + cols)
-    names = ["tp"] + names
-    return d, X, names
+
+def _two_way_demean(values: np.ndarray, city_codes: np.ndarray,
+                    date_codes: np.ndarray) -> np.ndarray:
+    """Remove FE de cidade e de data de um vetor de painel balanceado."""
+    city_count = np.bincount(city_codes)
+    date_count = np.bincount(date_codes)
+    city_mean = np.bincount(city_codes, weights=values) / city_count
+    date_mean = np.bincount(date_codes, weights=values) / date_count
+    return values - city_mean[city_codes] - date_mean[date_codes] + float(np.mean(values))
 
 
 def fit_did_panel(
@@ -66,14 +63,17 @@ def fit_did_panel(
     within-FE só remove nível, não escala; o τ vira dominado pelas maiores).
     Com normalize_scale, τ já é aproximadamente o efeito relativo.
     """
-    treated = [c for c in treated_cities if c in panel.cities]
-    control = [c for c in control_cities if c in panel.cities]
+    treated = list(dict.fromkeys(c for c in treated_cities if c in panel.cities))
+    control = list(dict.fromkeys(c for c in control_cities
+                                 if c in panel.cities and c not in set(treated)))
     if not treated or len(control) < 2:
         return DiDFit(np.nan, np.nan, pd.DataFrame(), {}, False)
 
     pre_mask, post_mask = window.masks(panel.index)
     keep = pre_mask | post_mask
     sub = panel.outcome.loc[keep, treated + control].copy()
+    if sub.isna().any().any():
+        return DiDFit(np.nan, np.nan, pd.DataFrame(), {}, False)
 
     scale = {}
     if normalize_scale:
@@ -89,15 +89,18 @@ def fit_did_panel(
     d, X, names = _build_design(long, set(treated), window.start_date, holidays)
     y = d["y"].to_numpy(float)
 
-    # within-transformation: demean por cidade (FE de unidade)
+    # Two-way within transformation: absorve FE de cidade e todos os choques
+    # comuns de cada data. Isso é equivalente a estimar dummies de cidade e de
+    # data, mas evita construir uma matriz densa N×T no painel diário.
     city_codes = d["city"].astype("category").cat.codes.to_numpy()
-
-    def demean(v):
-        means = np.bincount(city_codes, weights=v) / np.bincount(city_codes)
-        return v - means[city_codes]
-
-    yd = demean(y)
-    Xd = np.column_stack([demean(X[:, j]) for j in range(X.shape[1])])
+    date_codes = d["date"].astype("category").cat.codes.to_numpy()
+    expected_rows = len(sub.index) * len(sub.columns)
+    if len(d) != expected_rows:
+        return DiDFit(np.nan, np.nan, pd.DataFrame(), {}, False)
+    yd = _two_way_demean(y, city_codes, date_codes)
+    Xd = np.column_stack([
+        _two_way_demean(X[:, j], city_codes, date_codes) for j in range(X.shape[1])
+    ])
 
     beta, *_ = np.linalg.lstsq(Xd, yd, rcond=None)
     tau = float(beta[0])
@@ -120,6 +123,7 @@ def fit_did_panel(
         design_info={"X_names": names, "Xd": Xd, "yd": yd, "city_codes": city_codes,
                      "treated_cities": treated, "control_cities": control,
                      "normalize_scale": normalize_scale, "scale": scale,
-                     "window": window, "holidays": list(holidays or [])},
+                     "window": window, "holidays": list(holidays or []),
+                     "n_time_periods": int(date_codes.max() + 1)},
         success=True,
     )

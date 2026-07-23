@@ -1,4 +1,4 @@
-"""Inferência conformal para SC/ASCM/SDID (Chernozhukov, Wüthrich & Zhu, JASA 2021).
+"""Inferência conformal para SCM/SDID (Chernozhukov, Wüthrich & Zhu, JASA 2021).
 
 Teste de H0: τ_t = τ0 ∀t no pós:
   1. Impõe H0 subtraindo τ0 dos outcomes pós da tratada.
