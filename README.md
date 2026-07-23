@@ -41,7 +41,7 @@ THIS FRAMEWORK (SCM + in-space permutation):
   Median placebo ATT bias: +0.04%
 
 POWER CURVE (2 treated, 18 donors, 35 days, SCM):
-  δ=3% → 36% | δ=5% → 76% | δ=8% → 88% | δ=12% → 100%   (MDE@80% = 8%)
+  δ=3% → 20% | δ=5% → 68% | δ=8% → 92% | δ=12% → 100%   (MDE@80% = 8%)
 ```
 
 Reproduce with `python calibration_certificate.py`. The `05_aa_calibration`
