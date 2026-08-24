@@ -3,11 +3,12 @@
 A city-level (geo) experimentation framework with measurable statistical rigor:
 a tested Python library, thin Databricks notebook clients, an experiment
 registry with pre-registration as a contract, and A/A calibration as a
-permanent validity certificate.
+reproducible, versioned validity certificate.
 
 > **Status:** internal proof of concept, made public for reference. Data
 > adapters (`spark_io.py`) use placeholder table names — point them to your own
-> environment. Everything else runs offline on plain pandas/numpy.
+> environment. Checked-in examples and public CI artifacts use synthetic data
+> only; no production or internal-data output is published.
 
 ## Why this exists
 
@@ -44,9 +45,24 @@ POWER CURVE (2 treated, 18 donors, 35 days, SCM):
   δ=3% → 20% | δ=5% → 68% | δ=8% → 92% | δ=12% → 100%   (MDE@80% = 8%)
 ```
 
-Reproduce with `python calibration_certificate.py`. The `05_aa_calibration`
-notebook runs the same procedure **on real data** and persists the certificate —
-run it after any estimator change (a statistical regression test).
+These values are a snapshot of the canonical seeded synthetic run. Reproduce it
+with `python calibration_certificate.py --output-dir calibration-artifacts`.
+The command prints the human-readable report and writes two UTF-8 files derived
+from the same payload: `calibration_certificate.txt` and the schema-versioned
+`calibration_certificate.json`. The JSON records the design parameters, fixed
+random seeds, software versions, numeric diagnostics, and calibration verdict.
+
+Each successful
+[statistical-calibration workflow run](https://github.com/el-gabri/experimentation-framework/actions/workflows/ci.yml?query=branch%3Amain)
+uploads the JSON file as the `statistical-calibration-certificate` artifact for
+90 days. Open the latest successful `main` run and download it from the
+**Artifacts** section. If the certificate verdict fails, the script exits
+non-zero after writing the JSON and CI retains that failed certificate for
+diagnosis. The certificate-generation step gets all of its data from
+`make_synthetic_panel`; the JSON explicitly declares `contains_real_data` as
+`false` and never reads the Spark adapters or environment-specific notebook
+inputs. The `05_aa_calibration` notebook remains a deployment template for a
+user's own environment, but it is not a source for the public artifact.
 
 ## Architecture
 
@@ -83,9 +99,9 @@ notebooks/  (thin clients, ~30 lines of logic each)
 ├── 02_fixed_control_selection.ipynb   # fixed control with temporal holdout
 ├── 03_design_experiment.ipynb         # spillover + POWER GATE + pre-registration
 ├── 04_analyze_experiment.ipynb        # triangulation + persistence
-└── 05_aa_calibration.ipynb            # recurring certificate on real data
+└── 05_aa_calibration.ipynb            # environment-specific calibration template
 
-tests/test_core.py            # suíte do core, incl. effect recovery e calibração estatística
+tests/                        # core + fast artifact-contract tests
 ```
 
 ## Experiment lifecycle
@@ -128,7 +144,7 @@ tests/test_core.py            # suíte do core, incl. effect recovery e calibra�
 pip install -e ".[dev]"
 pytest tests/ -q -m "not slow"         # fast unit tests
 pytest tests/ -q -m slow               # statistical calibration (effect recovery, A/A FPR)
-python calibration_certificate.py      # reproduce the A/A certificate
+python calibration_certificate.py --output-dir calibration-artifacts  # text + JSON
 ```
 
 Optional extras: `pip install -e ".[spark]"` for the Databricks/Spark adapters

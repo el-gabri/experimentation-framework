@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
-      - run: ruff check src tests
+      - run: ruff check src tests calibration_certificate.py
       - run: mypy src
       - name: Notebooks são derivados de make_notebooks.py
         run: |
@@ -46,4 +46,13 @@ jobs:
       - name: Slow statistical regression tests (effect recovery, A/A FPR)
         run: pytest tests/ -q -m slow
       - name: Reproduce the A/A calibration certificate
-        run: python calibration_certificate.py
+        id: reproduce_certificate
+        run: python calibration_certificate.py --output-dir calibration-artifacts
+      - name: Upload the public calibration certificate
+        if: ${{ always() && steps.reproduce_certificate.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: statistical-calibration-certificate
+          path: calibration-artifacts/calibration_certificate.json
+          if-no-files-found: error
+          retention-days: 90

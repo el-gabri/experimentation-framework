@@ -72,6 +72,7 @@ def simulate_once(
     seasonal_effect: bool = False,
     rng: Optional[np.random.Generator] = None,
     max_group_placebos: Optional[int] = 10,
+    permutation_seed: Optional[int] = 123,
 ) -> Dict:
     """Um experimento placebo com efeito injetado δ (multiplicativo)."""
     donors = [d for d in donors if d not in set(treated)]
@@ -95,6 +96,7 @@ def simulate_once(
         fit_kwargs=fit_kwargs or {},
         n_treated_units=len(treated),
         max_group_placebos=max_group_placebos,
+        seed=permutation_seed,
     )
     return {
         "delta": delta, "start_idx": start_idx,
@@ -117,6 +119,7 @@ def power_analysis(
     seed: int = 42,
     fit_kwargs: Optional[dict] = None,
     max_group_placebos: Optional[int] = 10,
+    permutation_seed: Optional[int] = 123,
 ) -> PowerResult:
     """
     alpha default 0.10: com poucos placebos a granularidade mínima do p-value é
@@ -132,7 +135,8 @@ def power_analysis(
             rows.append(simulate_once(panel, treated, donors, fit_fn, s,
                                       pre_days, post_days, float(delta), alpha,
                                       fit_kwargs, seasonal_effect=True, rng=rng,
-                                      max_group_placebos=max_group_placebos))
+                                      max_group_placebos=max_group_placebos,
+                                      permutation_seed=permutation_seed))
     df = pd.DataFrame(rows)
     power = df.groupby("delta")["reject"].mean().to_dict()
     fpr = float(power.get(0.0, np.nan))

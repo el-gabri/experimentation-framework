@@ -48,6 +48,7 @@ def run_aa_calibration(
     min_valid_runs: int = 100,
     min_ks_p_value: float = 0.01,
     max_group_placebos: Optional[int] = 30,
+    permutation_seed: Optional[int] = 123,
 ) -> AACalibration:
     from scipy.stats import beta as beta_dist
     from scipy.stats import kstest
@@ -76,7 +77,8 @@ def run_aa_calibration(
             r = simulate_once(panel, treated, donors, fit_fn, start,
                               pre_days, post_days, delta=0.0, alpha=alpha,
                               fit_kwargs=fit_kwargs,
-                              max_group_placebos=max_group_placebos)
+                              max_group_placebos=max_group_placebos,
+                              permutation_seed=permutation_seed)
         except Exception as e:  # pragma: no cover
             rows.append({"run": run, "p_value": np.nan, "reject": False, "error": str(e)})
             continue

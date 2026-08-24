@@ -19,6 +19,7 @@ venv/
 .pytest_cache/
 .coverage
 htmlcov/
+/calibration-artifacts/
 
 # OS
 .DS_Store
