@@ -9,12 +9,12 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
-      - run: ruff check src tests calibration_certificate.py
+      - run: ruff check src tests calibration_certificate.py make_notebooks.py
       - run: mypy src
       - name: Notebooks são derivados de make_notebooks.py
         run: |
@@ -25,21 +25,71 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
       - name: Fast tests
         run: pytest tests/ -q -m "not slow"
 
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - run: pip install build twine
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - name: Verify the source distribution surface
+        run: |
+          python - <<'PY'
+          import glob
+          import tarfile
+
+          archives = glob.glob("dist/*.tar.gz")
+          assert len(archives) == 1, archives
+          with tarfile.open(archives[0], "r:gz") as archive:
+              names = set(archive.getnames())
+          required = {
+              "calibration_certificate.py",
+              "make_notebooks.py",
+              "notebooks/03_design_experiment.ipynb",
+              "tests/test_calibration_certificate.py",
+              "docs/VALIDITY.md",
+          }
+          missing = sorted(
+              path for path in required
+              if not any(name.endswith("/" + path) for name in names)
+          )
+          forbidden = sorted(
+              name for name in names
+              if "/.claude/" in name
+              or "/docs/causal-plans/" in name
+              or "__pycache__" in name
+              or name.endswith((".pyc", ".pyo", ".DS_Store"))
+          )
+          assert not missing, f"missing from sdist: {missing}"
+          assert not forbidden, f"private/generated files in sdist: {forbidden}"
+          PY
+      - name: Install and import the wheel
+        run: |
+          pip install --force-reinstall dist/*.whl
+          python -c "import supply_experiments; assert supply_experiments.__version__ == '2.0.0a1'"
+      - name: Install and import the source distribution
+        run: |
+          pip install --force-reinstall dist/*.tar.gz
+          python -c "import supply_experiments; assert supply_experiments.__version__ == '2.0.0a1'"
+
   statistical-calibration:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
@@ -50,7 +100,7 @@ jobs:
         run: python calibration_certificate.py --output-dir calibration-artifacts
       - name: Upload the public calibration certificate
         if: ${{ always() && steps.reproduce_certificate.outcome != 'skipped' }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: statistical-calibration-certificate
           path: calibration-artifacts/calibration_certificate.json

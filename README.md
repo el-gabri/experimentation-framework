@@ -1,162 +1,239 @@
-# supply_experiments — Geo-Experimentation Framework
+# `supply-experiments`
 
-A city-level (geo) experimentation framework with measurable statistical rigor:
-a tested Python library, thin Databricks notebook clients, an experiment
-registry with pre-registration as a contract, and A/A calibration as a
-reproducible, versioned validity certificate.
+`supply-experiments` is an opinionated Python toolkit for designing and auditing
+small-market geo experiments. It combines historical-panel design tools,
+spillover-aware donor filtering, simulation-based power analysis, synthetic-control
+estimators, placebo diagnostics, A/A calibration, and optional Spark/Delta adapters.
 
-> **Status:** internal proof of concept, made public for reference. Data
-> adapters (`spark_io.py`) use placeholder table names — point them to your own
-> environment. Checked-in examples and public CI artifacts use synthetic data
-> only; no production or internal-data output is published.
+> **Project status: alpha / research prototype.** The package can support a
+> disciplined workflow, but it does not make an observational geo experiment valid by
+> itself. Causal interpretation still depends on design-specific assumptions such as
+> unaffected donors, no anticipation, stable untreated relationships, and a defensible
+> treatment-assignment or exchangeability argument. Read
+> [the validity contract](https://github.com/el-gabri/experimentation-framework/blob/main/docs/VALIDITY.md)
+> before using an inferential result.
 
-## Why this exists
+## What the package provides
 
-Measuring the impact of an intervention rolled out in a handful of cities is
-statistically hostile territory: few treated units, strong day-of-week and
-seasonal structure, autocorrelated daily series, and donor pools contaminated
-by spillover. Naive approaches — e.g. a classical t-test on an OLS regression
-over aggregated treated-vs-control series — ignore autocorrelation and deliver
-false-positive rates far above the nominal α (43% at α = 0.05 in our A/A
-benchmark below). This framework is built so that every reported p-value means
-what it claims to mean.
+- A pandas/numpy core for balanced city-by-day panels.
+- SCM, ridge-augmented SCM, and synthetic DiD point estimates for sensitivity
+  analysis.
+- In-space placebo ranks and an experimental conformal-inference path.
+- Historical-window power/MDE simulation and treated-market screening.
+- Radius/adjacency donor exclusions and data-eligibility checks.
+- A serializable `DesignSpec`, stable design fingerprints, registry approval checks,
+  and an analysis-window guard.
+- An estimator-pluggable A/A runner with optional selector replay and a reproducible
+  synthetic calibration artifact.
+- Optional Spark/Delta adapters and thin Databricks notebook templates.
 
-Core principles:
+The estimator implementations are not presented as new statistical methods. The
+project's intended contribution is the Python design-and-governance workflow around
+them.
 
-1. **Measurable validity** — every estimator must pass A/A calibration before use.
-2. **Design ≠ estimation ≠ decision**, with explicit contracts (registry + pre-registration).
-3. **Permutation / conformal inference by default** — the only honest options with 1–3 treated units.
-4. **Tested library, thin notebooks** — one implementation, no copy-paste divergence.
-5. **Triangulation** — DiD, SCM, ASCM and SDID side by side, with an explicit agreement verdict.
+## Installation
 
-## Calibration certificate (A/A, synthetic panel: 40 cities × 430 days)
+Python 3.10 or newer is required.
 
-```
-NAIVE BASELINE (aggregated OLS, classical t-test):
-  FPR @ α=0.05: 43.3%   (expected: 5%)   ← nearly half of all "significant" results are false
-  FPR @ α=0.10: 49.2%   (expected: 10%)
-
-THIS FRAMEWORK (SCM + in-space permutation):
-  FPR @ α=0.10:  7.5%   95% CI [3.5%, 13.8%]   ← calibrated
-  KS p-value (p-value uniformity): 0.486
-  Median placebo ATT bias: +0.04%
-
-POWER CURVE (2 treated, 18 donors, 35 days, SCM):
-  δ=3% → 20% | δ=5% → 68% | δ=8% → 92% | δ=12% → 100%   (MDE@80% = 8%)
-```
-
-These values are a snapshot of the canonical seeded synthetic run. Reproduce it
-with `python calibration_certificate.py --output-dir calibration-artifacts`.
-The command prints the human-readable report and writes two UTF-8 files derived
-from the same payload: `calibration_certificate.txt` and the schema-versioned
-`calibration_certificate.json`. The JSON records the design parameters, fixed
-random seeds, software versions, numeric diagnostics, and calibration verdict.
-
-Each successful
-[statistical-calibration workflow run](https://github.com/el-gabri/experimentation-framework/actions/workflows/ci.yml?query=branch%3Amain)
-uploads the JSON file as the `statistical-calibration-certificate` artifact for
-90 days. Open the latest successful `main` run and download it from the
-**Artifacts** section. If the certificate verdict fails, the script exits
-non-zero after writing the JSON and CI retains that failed certificate for
-diagnosis. The certificate-generation step gets all of its data from
-`make_synthetic_panel`; the JSON explicitly declares `contains_real_data` as
-`false` and never reads the Spark adapters or environment-specific notebook
-inputs. The `05_aa_calibration` notebook remains a deployment template for a
-user's own environment, but it is not a source for the public artifact.
-
-## Architecture
-
-```
-src/supply_experiments/
-├── panel.py                  # CityPanel (outcome + num/den for ratio KPIs), ExperimentWindow
-├── estimators/
-│   ├── scm.py                # Abadie SCM; simplex via FISTA + exact projection (Duchi 2008)
-│   ├── ascm.py               # Ridge-augmented SCM (Ben-Michael, Feller & Rothstein 2021)
-│   ├── sdid.py               # Synthetic DiD (Arkhangelsky et al. 2021), ζ + Frank-Wolfe
-│   └── did.py                # City-level panel DiD, within-FE, normalized scale
-├── inference/
-│   ├── permutation.py        # post/pre RMSPE-ratio p-value (Abadie) — primary inference
-│   ├── conformal.py          # CIs by test inversion (Chernozhukov, Wüthrich & Zhu 2021)
-│   └── bootstrap.py          # Restricted wild cluster bootstrap-t; Webb weights if G<12
-├── design/
-│   ├── power.py              # simulation-based power on historical windows; MDE@80%
-│   ├── control_selection.py  # greedy+swaps on train split; F-test only on holdout
-│   ├── treated_selection.py  # ranks candidate treated sets by MDE (measurability-first design)
-│   └── spillover.py          # radius/adjacency exclusion; eligibility (zero-runs, CV)
-├── calibration/aa.py         # A/A runner: FPR + Clopper-Pearson CI + KS + bias
-├── synthetic.py              # synthetic panel generator (tests + calibration_certificate.py)
-├── config.py                 # RunConfig: centralized defaults (alpha, spillover, eligibility)
-├── metrics.py                # ratio DiD with delta method (weekly blocks)
-├── reporting.py              # analyze_experiment: triangulation + BH + anti-peeking
-├── io/                        # Spark/Databricks adapters, split by concern
-│   ├── tables.py             # table names + holiday calendar
-│   ├── etl.py                # build_orders_base, load_city_panel
-│   └── registry.py           # ExperimentRecord, pre-registration gate, registry queries
-└── spark_io.py               # back-compat re-export of `io.*` (existing notebooks import this)
-
-notebooks/  (thin clients, ~30 lines of logic each)
-├── 01_etl.ipynb                       # panel + eligibility
-├── 02_fixed_control_selection.ipynb   # fixed control with temporal holdout
-├── 03_design_experiment.ipynb         # spillover + POWER GATE + pre-registration
-├── 04_analyze_experiment.ipynb        # triangulation + persistence
-└── 05_aa_calibration.ipynb            # environment-specific calibration template
-
-tests/                        # core + fast artifact-contract tests
-```
-
-## Experiment lifecycle
-
-1. **Design** (`03_design_experiment`): proposed treated cities → donor pool
-   cleaned of spillover → `power_analysis` estimates the MDE → `save_experiment`
-   **refuses** the design if MDE > expected effect, the hypothesis is empty, the
-   decision rule is empty, or there are fewer than 9 donors at α=0.10.
-2. **Execution**: the intervention runs; nobody analyzes (anti-peeking raises
-   `ValueError`).
-3. **Analysis** (`04_analyze_experiment`): SCM + ASCM + SDID with permutation
-   inference, conformal CIs, optional panel DiD with wild cluster bootstrap,
-   delta-method guardrails with BH correction, and a triangulation verdict
-   (CONCORDANT / PARTIAL / DIVERGENT).
-4. **Decision**: made against the pre-registered `decision_rule` — never ad hoc.
-
-## Key statistical design decisions
-
-- **Default α = 0.10 for permutation inference**: with J donors the minimum
-  attainable p-value is 1/(J+1); with 15 donors that is 0.0625 — α = 0.05 would
-  require ≥ 20 donors. Reports warn when the donor pool limits granularity.
-- **RMSPE-ratio as the primary statistic**; with multiple treated cities, each
-  placebo is a donor group of the same size (Monte Carlo sampled when the
-  combination space is large). p(|ATT|) is reported for transparency.
-- **City-level DiD with outcomes normalized by the pre-period mean**: without
-  this, within-FE removes level but not scale, and τ is dominated by the
-  largest cities.
-- **FISTA with exact simplex projection instead of SLSQP**: SLSQP declares
-  success with an objective ~20× worse than optimal on instances with donors of
-  very different scales (a failure mode caught by the test suite).
-- **Ratio KPIs via ratio-of-sums + delta method on weekly blocks** — never OLS
-  on the daily ratio, whose variance explodes on small-denominator days.
-- **Control selection with temporal holdout**: the parallel-trends test is an
-  acceptance criterion on held-out data, never part of the optimization score
-  (no pre-testing contamination).
-
-## Getting started
+From a source checkout:
 
 ```bash
-pip install -e ".[dev]"
-pytest tests/ -q -m "not slow"         # fast unit tests
-pytest tests/ -q -m slow               # statistical calibration (effect recovery, A/A FPR)
-python calibration_certificate.py --output-dir calibration-artifacts  # text + JSON
+python -m pip install .
 ```
 
-Optional extras: `pip install -e ".[spark]"` for the Databricks/Spark adapters
-in `spark_io.py` (not needed to run the core library or the test suite).
+For development:
 
-The library core (`panel`, `estimators`, `inference`, `design`, `calibration`,
-`metrics`, `reporting`) has no Spark dependency and runs anywhere. Spark is
-imported lazily inside `spark_io.py` only.
+```bash
+python -m pip install -e ".[dev]"
+```
 
-## References
+The alpha release is versioned as `2.0.0a1`. After it has been published to
+PyPI, install it explicitly while it remains a pre-release:
 
-Abadie, Diamond & Hainmueller (2010, JASA); Abadie (2021, JEL); Arkhangelsky et
-al. (2021, AER); Ben-Michael, Feller & Rothstein (2021, JASA); Chernozhukov,
-Wüthrich & Zhu (2021, JASA); Cameron, Gelbach & Miller (2008, REStat);
-MacKinnon & Webb (2018); Duchi et al. (2008, ICML).
+```bash
+python -m pip install --pre supply-experiments==2.0.0a1
+```
+
+The core library requires only NumPy, pandas, and SciPy. Spark is optional:
+
+```bash
+python -m pip install ".[spark]"
+```
+
+## Minimal plain-Python example
+
+This example fits a single-treated-geo SCM on deterministic synthetic data and
+computes an in-space placebo rank:
+
+```python
+from supply_experiments import ExperimentWindow, fit_scm, make_synthetic_panel
+from supply_experiments.inference.permutation import placebo_inference
+
+panel = make_synthetic_panel(
+    n_cities=16,
+    n_days=330,
+    seed=42,
+    treated=["CITY_03"],
+    treat_start_idx=260,
+    treat_effect=0.08,
+)
+window = ExperimentWindow(
+    start_date=panel.index[260].date(),
+    end_date=panel.index[287].date(),
+    pre_window_days=120,
+)
+treated = ["CITY_03"]
+donors = [city for city in panel.cities if city not in treated][:12]
+panel_slice = panel.slice_for(treated, donors, window)
+
+fit = fit_scm(*panel_slice.as_args())
+placebos = placebo_inference(
+    fit_scm,
+    *panel_slice.as_args(),
+    n_treated_units=1,
+    max_group_placebos=None,
+    seed=123,
+)
+
+print(f"ATT: {fit.att_pct:+.1%}")
+print(f"pre-period RMSPE: {fit.pre_rmspe:.1%}")
+print(f"in-space placebo rank: {placebos.p_value:.3f}")
+print(f"decision-valid inference: {placebos.valid_for_decision}")
+```
+
+The placebo rank is an exact p-value only when the treatment assignment or an
+appropriate exchangeability argument justifies relabeling geographies. Otherwise,
+treat it as a falsification/sensitivity diagnostic. See the
+[full quickstart](https://github.com/el-gabri/experimentation-framework/blob/main/docs/QUICKSTART.md)
+for the real-data contract and interpretation.
+
+## Intended workflow
+
+1. Define the intervention, outcome, treatment window, decision rule, and plausible
+   spillover mechanism before looking at post-treatment results.
+2. Build a complete daily `CityPanel`; make every missing-data decision explicit.
+3. Freeze eligible treated and donor geographies after spillover exclusions.
+4. Serialize a draft `DesignSpec` containing the exact estimator set, inference
+   configuration, validity gates, calibration acceptance thresholds, and executable
+   decision rule.
+5. Estimate power and run A/A calibration on historical data by replaying that complete
+   design procedure, including treatment-market selection when it was optimized. MDEs
+   returned while ranking candidate markets are screening quantities, not approval gates.
+6. Bind the passing calibration fingerprint to the `DesignSpec`, approve it, and store
+   both before treatment starts.
+7. After the registered window ends, analyze through the bound `DesignSpec`; inspect
+   pre-fit, weights, placebo behavior, and estimator sensitivity.
+
+The high-level power, registry, and analysis paths compare explicit inputs with the
+stored design fingerprint and fail closed on a mismatch. External storage still has to
+preserve and load the exact registry row and calibration artifact; a bare low-level
+estimator call intentionally bypasses that governance layer.
+
+## Statistical scope
+
+The most important current boundaries are:
+
+- SCM is an outcome-only, equal-pre-period-weight special case of classical SCM.
+- ASCM tunes ridge regularization with leave-one-pre-period-out prediction and exposes
+  effective-weight/extrapolation diagnostics, but has no official-package replication
+  artifact yet.
+- SDID implements the paper's treated-mean and regularization formulas through a
+  project-specific optimizer; numerical equivalence to the official implementation is
+  not claimed.
+- Conformal inference is restricted to SCM and inverts a sharp constant post-effect
+  hypothesis; it is not a generic interval for an unrestricted ATT. See the
+  [validity contract](https://github.com/el-gabri/experimentation-framework/blob/main/docs/VALIDITY.md)
+  for the method-by-method scope.
+- In-space placebo ranks do not automatically become randomization p-values after
+  treatment-market optimization.
+- The exact randomization path permutes labels over the full treated-plus-donor
+  universe. Multi-treated calls therefore require the individual treated trajectories;
+  an aggregate treated series is insufficient. A failed alternative-assignment fit
+  invalidates the reference distribution instead of being silently dropped.
+- The ordinary panel-DiD wild-cluster bootstrap fails closed below four treated
+  clusters; above that misuse threshold it remains diagnostic-only because the package
+  has no design-matched size certificate. Webb weights do not solve the
+  few-treated-cluster problem.
+- The public A/A artifact covers 400 seeded pseudo-experiments under an explicitly
+  randomized assignment over the treated-plus-donor universe. It is regression
+  evidence for that randomized configuration, not evidence that observational placebo
+  ranks or optimized market selection are calibrated.
+
+## Reproducible synthetic calibration
+
+The repository includes a deterministic synthetic calibration job:
+
+```bash
+python calibration_certificate.py --output-dir calibration-artifacts
+```
+
+The command reports randomized-label null rejection frequencies, exact binomial
+uncertainty, invalid-fit rates, rank diagnostics, and a grid-based power curve for its
+declared seeded configuration. It deliberately does not certify the observational
+placebo path: that path requires A/A calibration of the user's complete selected
+design. A null rejection frequency estimates type-I error under the simulated
+generator; it is not the fraction of significant real-world findings that are false.
+The reported MDE is the smallest tested effect-grid value meeting the target power,
+not a precise continuous threshold. Regenerate the artifact for each release instead
+of copying numbers across estimator or design changes.
+
+CI regenerates the JSON artifact from fixed seeds and records its design parameters
+and software versions. A passing artifact means that this seeded regression job met
+its declared checks; it does not certify other estimators, data-generating regimes,
+market-selection procedures, or decision rules.
+
+## Development and verification
+
+```bash
+python -m pytest tests/ -q -m "not slow"
+python -m pytest tests/ -q -m slow
+python -m ruff check src tests calibration_certificate.py make_notebooks.py
+python -m mypy src
+python -m build
+python -m twine check dist/*
+```
+
+CI exercises supported Python versions, checks generated-notebook determinism, runs
+the slow statistical regression tests, and regenerates the synthetic calibration
+artifact. Spark/Delta integration requires an external Spark environment.
+
+## Documentation
+
+- [Plain-Python quickstart](https://github.com/el-gabri/experimentation-framework/blob/main/docs/QUICKSTART.md)
+- [Validity, assumptions, implementation deviations, and unsupported regimes](https://github.com/el-gabri/experimentation-framework/blob/main/docs/VALIDITY.md)
+- [Migration notes for the breaking 2.0 alpha](https://github.com/el-gabri/experimentation-framework/blob/main/docs/MIGRATION_V2.md)
+- [Maintainer release procedure](https://github.com/el-gabri/experimentation-framework/blob/main/docs/RELEASING.md)
+- [Changelog](https://github.com/el-gabri/experimentation-framework/blob/main/CHANGELOG.md)
+- [`calibration_certificate.py`](https://github.com/el-gabri/experimentation-framework/blob/main/calibration_certificate.py)
+  for the reproducible
+  synthetic artifact
+
+## Positioning and non-goals
+
+The closest end-to-end comparator is
+[GeoLift](https://github.com/facebookincubator/GeoLift). Other relevant Python or
+time-series libraries include [CausalPy](https://github.com/pymc-labs/CausalPy),
+[pysyncon](https://github.com/sdfordham/pysyncon),
+[SparseSC](https://github.com/microsoft/SparseSC),
+[CausalImpact](https://github.com/google/CausalImpact), and
+[DoubleML](https://github.com/DoubleML/doubleml-for-py).
+
+This project is not intended to replace those estimator libraries, provide automated
+causal identification, support multi-cell winner selection, or guarantee valid
+inference from arbitrary observational panels. The detailed comparison is in
+[VALIDITY.md](https://github.com/el-gabri/experimentation-framework/blob/main/docs/VALIDITY.md#positioning-and-non-goals).
+
+## Primary references
+
+- Abadie, Diamond, and Hainmueller,
+  [Synthetic Control Methods for Comparative Case Studies](https://j-hai.github.io/assets/pdf/scm.pdf).
+- Ben-Michael, Feller, and Rothstein,
+  [The Augmented Synthetic Control Method](https://jesse-rothstein.com/wp-content/uploads/2021/07/Ben-Michael_Feller_Rothstein_Augsynth_JASA_2021.pdf).
+- Arkhangelsky et al.,
+  [Synthetic Difference-in-Differences](https://www.nber.org/papers/w25532).
+- Chernozhukov, Wüthrich, and Zhu,
+  [An Exact and Robust Conformal Inference Method for Counterfactual and Synthetic Controls](https://doi.org/10.1080/01621459.2021.1920957).
+- Cameron, Gelbach, and Miller,
+  [Bootstrap-Based Improvements for Inference with Clustered Errors](https://doi.org/10.1162/rest.90.3.414).
+
+MIT licensed. See [LICENSE](https://github.com/el-gabri/experimentation-framework/blob/main/LICENSE).

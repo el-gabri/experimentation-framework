@@ -16,15 +16,19 @@ from supply_experiments.synthetic import make_synthetic_panel
 
 
 def _sample_results():
-    rejects = [True] * 9 + [False] * 111
+    n_runs = certificate_module.AA_RUNS
+    n_rejections = round(0.075 * n_runs)
+    rejects = [True] * n_rejections + [False] * (n_runs - n_rejections)
     aa = AACalibration(
-        n_runs=120,
+        n_runs=n_runs,
         alpha=0.10,
         fpr=0.075,
         fpr_ci=(0.035, 0.138),
         ks_p_value=0.486,
         median_att_bias=0.0004,
         passed=True,
+        requested_runs=n_runs,
+        assignment_mechanism="randomized",
         details=pd.DataFrame(
             {
                 "p_value": [0.05 if rejected else 0.50 for rejected in rejects],
@@ -51,6 +55,7 @@ def _sample_results():
         mde_80=0.08,
         n_sims_per_point=25,
         alpha=0.10,
+        assignment_mechanism="randomized",
         details=pd.DataFrame(power_rows),
     )
     return aa, power
@@ -58,15 +63,27 @@ def _sample_results():
 
 def _sample_certificate():
     aa, power = _sample_results()
-    naive_p_values = [0.01] * 52 + [0.08] * 7 + [0.50] * 61
+    n_runs = certificate_module.AA_RUNS
+    rejects_05 = round(0.42 * n_runs)
+    rejects_10_only = round(0.06 * n_runs)
+    naive_p_values = (
+        [0.01] * rejects_05
+        + [0.08] * rejects_10_only
+        + [0.50] * (n_runs - rejects_05 - rejects_10_only)
+    )
     return certificate_module.build_certificate(naive_p_values, aa, power)
 
 
 def test_machine_certificate_contract_is_explicit_and_synthetic_only():
     certificate = _sample_certificate()
 
-    assert certificate["schema_version"] == "1.0.0"
+    assert certificate["schema_version"] == "2.0.0"
     assert certificate["certificate_type"] == "synthetic_statistical_calibration"
+    assert certificate["claim_scope"] == {
+        "configuration": "bundled_seeded_randomized_scm_fixture",
+        "authoritative_for_user_designs": False,
+        "requires_user_design_calibration": True,
+    }
     assert certificate["data_scope"]["kind"] == "synthetic_only"
     assert certificate["data_scope"]["contains_real_data"] is False
     assert certificate["reproducibility"]["random_seeds"] == {
@@ -78,17 +95,21 @@ def test_machine_certificate_contract_is_explicit_and_synthetic_only():
     }
 
     framework = certificate["results"]["framework_aa"]
-    assert framework["requested_runs"] == 120
-    assert framework["valid_runs"] == 120
+    assert framework["requested_runs"] == certificate_module.AA_RUNS
+    assert framework["valid_runs"] == certificate_module.AA_RUNS
     assert framework["failed_runs"] == 0
-    assert framework["median_placebo_att_bias_role"] == "diagnostic_only"
-    assert framework["pass_criteria"]["nominal_alpha_inside_fpr_interval"] is True
+    assert framework["att_diagnostics_role"] == "diagnostic_only"
+    assert framework["assignment_mechanism"] == "randomized"
+    assert framework["inference"] == "symmetric_randomization_permutation"
+    assert framework["pass_criteria"]["maximum_invalid_rate_met"] is True
+    assert framework["pass_criteria"]["fpr_upper_bound_met"] is True
+    assert framework["fpr_one_sided_upper_bound"]["value"] <= 0.15
     baseline = certificate["results"]["naive_baseline"]
     assert baseline["complete"] is True
     assert baseline["failed_runs"] == 0
     assert [point["rejections"] for point in baseline["false_positive_rates"]] == [
-        52,
-        59,
+        round(0.42 * certificate_module.AA_RUNS),
+        round(0.48 * certificate_module.AA_RUNS),
     ]
 
     power_points = certificate["results"]["power_analysis"]["points"]
@@ -129,6 +150,7 @@ def test_text_and_json_artifacts_share_one_payload_and_are_repeatable(tmp_path):
     assert loaded == certificate
     human_report = first_text.decode("utf-8")
     assert "Synthetic-only panel" in human_report
+    assert "not an authoritative certificate for a user's design" in human_report
     assert f"{loaded['results']['framework_aa']['false_positive_rate']:.1%}" in human_report
 
 
@@ -141,8 +163,13 @@ def test_unavailable_diagnostics_are_portable_json_nulls(tmp_path):
         ks_p_value=np.nan,
         median_att_bias=np.nan,
         passed=False,
+        requested_runs=certificate_module.AA_RUNS,
+        assignment_mechanism="randomized",
         details=pd.DataFrame(
-            {"p_value": [np.nan] * 120, "reject": [False] * 120}
+            {
+                "p_value": [np.nan] * certificate_module.AA_RUNS,
+                "reject": [False] * certificate_module.AA_RUNS,
+            }
         ),
     )
     power_rows = [
@@ -157,15 +184,20 @@ def test_unavailable_diagnostics_are_portable_json_nulls(tmp_path):
         mde_80=None,
         n_sims_per_point=25,
         alpha=0.10,
+        assignment_mechanism="randomized",
         details=pd.DataFrame(power_rows),
     )
-    certificate = certificate_module.build_certificate([np.nan] * 120, aa, power)
+    certificate = certificate_module.build_certificate(
+        [np.nan] * certificate_module.AA_RUNS, aa, power
+    )
 
     framework = certificate["results"]["framework_aa"]
     assert certificate["results"]["naive_baseline"]["complete"] is False
-    assert certificate["results"]["naive_baseline"]["failed_runs"] == 120
+    assert certificate["results"]["naive_baseline"]["failed_runs"] == (
+        certificate_module.AA_RUNS
+    )
     assert framework["false_positive_rate"] is None
-    assert framework["ks_uniformity_p_value"] is None
+    assert framework["discrete_rank_pit_ks_p_value"] is None
     assert certificate["results"]["power_analysis"]["mde_grid_at_80pct_power"] is None
     assert certificate["results"]["power_analysis"]["mde_status"] == (
         "unavailable_incomplete_simulations"

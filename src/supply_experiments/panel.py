@@ -5,7 +5,7 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Literal, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -18,10 +18,19 @@ class ExperimentWindow:
     start_date: date          # primeiro dia do tratamento
     end_date: date            # último dia do tratamento
     pre_window_days: int
+    anticipation_days: int = 0  # dias removidos imediatamente antes do tratamento
+
+    def __post_init__(self) -> None:
+        if self.end_date < self.start_date:
+            raise ValueError("end_date deve ser >= start_date")
+        if self.pre_window_days < 5:
+            raise ValueError("pre_window_days deve ser >= 5")
+        if self.anticipation_days < 0:
+            raise ValueError("anticipation_days deve ser >= 0")
 
     @property
     def pre_end(self) -> date:
-        return self.start_date - timedelta(days=1)
+        return self.start_date - timedelta(days=self.anticipation_days + 1)
 
     @property
     def pre_start(self) -> date:
@@ -51,7 +60,9 @@ class CityPanel:
     outcome: pd.DataFrame
     numerators: Dict[str, pd.DataFrame] = field(default_factory=dict)
     denominators: Dict[str, pd.DataFrame] = field(default_factory=dict)
-    fill_value: float = 0.0   # valor para dias ausentes do índice diário contíguo
+    # ``None`` falha fechado. Preencher buracos com zero só é correto quando o
+    # produtor dos dados garante que data ausente significa atividade zero.
+    fill_value: Optional[float] = None
 
     def __post_init__(self) -> None:
         idx = self.outcome.index
@@ -68,6 +79,12 @@ class CityPanel:
         full = pd.date_range(idx.min(), idx.max(), freq="D")
         if len(full) != len(idx):
             n_missing = len(full) - len(idx)
+            if self.fill_value is None:
+                raise ValueError(
+                    f"CityPanel: {n_missing} dia(s) ausentes no índice diário; "
+                    "preencha/impute explicitamente ou passe fill_value=0 apenas "
+                    "quando ausência significar atividade zero"
+                )
             warnings.warn(
                 f"CityPanel: {n_missing} dia(s) ausentes no índice diário "
                 f"({idx.min().date()}..{idx.max().date()}) preenchidos com "
@@ -78,8 +95,10 @@ class CityPanel:
                 f"trate os NaN explicitamente antes de estimar.",
                 stacklevel=2,
             )
-            self.outcome = self.outcome.reindex(full).fillna(self.fill_value)
+            self.outcome = self.outcome.reindex(full).fillna(float(self.fill_value))
         self.outcome = self.outcome.astype(float)
+        if not np.isfinite(self.outcome.to_numpy(float)).all():
+            raise ValueError("outcome contém NaN ou infinito; trate dados ausentes antes do fit")
         kpis = set(self.numerators) | set(self.denominators)
         if set(self.numerators) != set(self.denominators):
             missing_num = sorted(set(self.denominators) - set(self.numerators))
@@ -115,8 +134,15 @@ class CityPanel:
                 f"datas ausentes receberam fill_value={self.fill_value}.",
                 stacklevel=3,
             )
-            frame = frame.reindex(full_index).fillna(self.fill_value)
-        return frame.astype(float)
+            if self.fill_value is None:
+                raise ValueError(
+                    f"{role} do KPI '{kpi}' não cobre o índice completo e fill_value=None"
+                )
+            frame = frame.reindex(full_index).fillna(float(self.fill_value))
+        frame = frame.astype(float)
+        if not np.isfinite(frame.to_numpy(float)).all():
+            raise ValueError(f"{role} do KPI '{kpi}' contém NaN ou infinito")
+        return frame
 
     @property
     def cities(self) -> List[str]:
@@ -127,7 +153,7 @@ class CityPanel:
         return self.outcome.index
 
     def subset(self, cities: Sequence[str]) -> "CityPanel":
-        cities = [c for c in cities if c in self.outcome.columns]
+        cities = _validate_city_list(cities, self.cities, "cities")
         return CityPanel(
             outcome=self.outcome[cities].copy(),
             numerators={k: v[[c for c in cities if c in v.columns]].copy() for k, v in self.numerators.items()},
@@ -135,24 +161,38 @@ class CityPanel:
             fill_value=self.fill_value,
         )
 
-    def aggregate(self, cities: Sequence[str], weights: Optional[Dict[str, float]] = None) -> pd.Series:
-        """Série agregada (soma ou média ponderada) do outcome para um grupo."""
-        cities = [c for c in cities if c in self.outcome.columns]
-        if not cities:
-            raise ValueError("Nenhuma cidade do grupo existe no painel")
+    def aggregate(
+        self,
+        cities: Sequence[str],
+        weights: Optional[Dict[str, float]] = None,
+        aggregation: Literal["mean", "sum"] = "mean",
+    ) -> pd.Series:
+        """Trajetória do grupo tratado.
+
+        ``mean`` é o estimando padrão de SCM/ASCM/SDID com múltiplas unidades:
+        compara a média tratada com uma média convexa de doadoras. ``sum`` é
+        oferecido apenas para estimandos de volume explicitamente declarados;
+        ele não deve ser combinado com doadoras individuais em simplex.
+        """
+        cities = _validate_city_list(cities, self.cities, "cities")
         if weights:
+            missing_weights = sorted(set(cities) - set(weights))
+            if missing_weights:
+                raise ValueError(f"pesos ausentes para cidades: {missing_weights}")
             w = _normalize_weights({c: weights.get(c, 0.0) for c in cities})
             return sum(self.outcome[c] * w[c] for c in cities if w.get(c, 0) > 0)
-        return self.outcome[cities].sum(axis=1)
+        if aggregation == "mean":
+            return self.outcome[cities].mean(axis=1)
+        if aggregation == "sum":
+            return self.outcome[cities].sum(axis=1)
+        raise ValueError(f"aggregation inválida: {aggregation!r}")
 
     def ratio_series(self, kpi: str, cities: Sequence[str], weights: Optional[Dict[str, float]] = None) -> pd.Series:
         """Razão de somas diária (numerador agregado / denominador agregado)."""
         if kpi not in self.numerators:
             raise KeyError(f"KPI de razão inexistente: {kpi}")
         num, den = self.numerators[kpi], self.denominators[kpi]
-        cities = [c for c in cities if c in num.columns and c in den.columns]
-        if not cities:
-            raise ValueError(f"Nenhuma cidade do grupo tem dados para o KPI '{kpi}'")
+        cities = _validate_city_list(cities, list(num.columns.intersection(den.columns)), "cities")
         if weights:
             w = _normalize_weights({c: weights.get(c, 0.0) for c in cities})
             n = sum(num[c] * w[c] for c in cities if w.get(c, 0) > 0)
@@ -163,7 +203,8 @@ class CityPanel:
 
     def long_format(self, cities: Sequence[str]) -> pd.DataFrame:
         """Painel long (city, date, y) para estimadores em nível de unidade."""
-        sub = self.outcome[[c for c in cities if c in self.outcome.columns]]
+        cities = _validate_city_list(cities, self.cities, "cities")
+        sub = self.outcome[cities]
         out = sub.stack().rename("y").reset_index()
         out.columns = ["date", "city", "y"]
         return out
@@ -174,6 +215,7 @@ class CityPanel:
         donors: Sequence[str],
         window: "ExperimentWindow",
         weights: Optional[Dict[str, float]] = None,
+        aggregation: Literal["mean", "sum"] = "mean",
     ) -> "PanelSlice":
         """Monta a fatia pré/pós (y_pre, Yd_pre, y_post, Yd_post, donor_names)
         que todo estimador/inferência consome, a partir de uma janela.
@@ -181,14 +223,33 @@ class CityPanel:
         Substitui o boilerplate repetido nos call sites (reporting.py e afins):
         `pre_mask, post_mask = window.masks(panel.index); y = panel.aggregate(...)...`
         """
-        donors = [d for d in donors if d in self.outcome.columns and d not in set(treated)]
+        treated = _validate_city_list(treated, self.cities, "treated")
+        donors = _validate_city_list(donors, self.cities, "donors")
+        overlap = sorted(set(treated) & set(donors))
+        if overlap:
+            raise ValueError(f"treated e donors se sobrepõem: {overlap}")
+        if len(donors) < 2:
+            raise ValueError("são necessárias pelo menos 2 doadoras")
         pre_mask, post_mask = window.masks(self.index)
-        y = self.aggregate(treated, weights).to_numpy(float)
+        if int(pre_mask.sum()) != window.pre_window_days:
+            raise ValueError(
+                f"painel não cobre a janela pré completa: {int(pre_mask.sum())}/"
+                f"{window.pre_window_days} dias"
+            )
+        if int(post_mask.sum()) != window.post_days:
+            raise ValueError(
+                f"painel não cobre a janela pós completa: {int(post_mask.sum())}/"
+                f"{window.post_days} dias"
+            )
+        y = self.aggregate(treated, weights, aggregation=aggregation).to_numpy(float)
+        Yt = self.outcome[treated].to_numpy(float)
         Yd = self.outcome[donors].to_numpy(float)
         return PanelSlice(
             y_pre=y[pre_mask], Yd_pre=Yd[pre_mask],
             y_post=y[post_mask], Yd_post=Yd[post_mask],
             donor_names=donors,
+            Y_treated_pre=Yt[pre_mask], Y_treated_post=Yt[post_mask],
+            treated_names=treated,
         )
 
 
@@ -207,6 +268,11 @@ class PanelSlice:
     y_post: np.ndarray
     Yd_post: np.ndarray
     donor_names: List[str]
+    # Individual treated trajectories are not positional estimator arguments,
+    # but are required for symmetric randomization inference with K > 1.
+    Y_treated_pre: Optional[np.ndarray] = None
+    Y_treated_post: Optional[np.ndarray] = None
+    treated_names: List[str] = field(default_factory=list)
 
     def as_args(self) -> "tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]":
         """5-tupla posicional esperada pelos estimadores (`fit_fn(*slice.as_args())`)."""
@@ -223,6 +289,20 @@ def _normalize_weights(w: Dict[str, float]) -> Dict[str, float]:
     if total <= 0:
         raise ValueError("Pesos inválidos (soma <= 0)")
     return {k: v / total for k, v in w.items()}
+
+
+def _validate_city_list(
+    cities: Sequence[str], available: Sequence[str], argument: str,
+) -> List[str]:
+    values = [str(c) for c in cities]
+    if not values:
+        raise ValueError(f"{argument} não pode ser vazio")
+    if len(values) != len(set(values)):
+        raise ValueError(f"{argument} contém cidades duplicadas")
+    missing = sorted(set(values) - set(str(c) for c in available))
+    if missing:
+        raise ValueError(f"{argument} contém cidades fora do painel: {missing}")
+    return values
 
 
 def make_dow_dummies(index: pd.DatetimeIndex) -> np.ndarray:

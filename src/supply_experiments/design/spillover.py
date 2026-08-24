@@ -28,16 +28,31 @@ def spillover_exclusions(
     coords: Dict[str, Tuple[float, float]],
     radius_km: float = 40.0,
     adjacency: Optional[Dict[str, Set[str]]] = None,
+    require_complete_coverage: bool = False,
 ) -> Tuple[List[str], List[Tuple[str, str, float]]]:
     """
     Retorna (candidatas_limpas, excluídas com motivo).
     Usa coordenadas (raio em km) e/ou lista de adjacência explícita (ex.: mesma
-    região metropolitana). Cidades sem coordenada permanecem elegíveis, pois o
-    raio não pode ser avaliado; complete ``coords`` antes de interpretar a
-    exclusão como uma garantia geográfica completa.
+    região metropolitana). Por compatibilidade, cidades sem coordenada
+    permanecem elegíveis quando ``require_complete_coverage=False``. Quando a
+    proteção geográfica é uma condição do design, ative o modo estrito: ele
+    falha antes de devolver um donor pool parcialmente auditado.
     """
     if radius_km < 0:
         raise ValueError("radius_km deve ser >= 0")
+    if require_complete_coverage:
+        if radius_km > 0:
+            required = set(treated) | set(candidates)
+            missing_coords = sorted(required - set(coords))
+            if missing_coords:
+                raise ValueError(
+                    "cobertura espacial incompleta; faltam coordenadas para: "
+                    f"{missing_coords}"
+                )
+        elif adjacency is None:
+            raise ValueError(
+                "proteção de spillover solicitada sem raio positivo nem adjacência"
+            )
     excluded: List[Tuple[str, str, float]] = []
     clean: List[str] = []
     adjacency = adjacency or {}

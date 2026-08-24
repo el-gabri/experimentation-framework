@@ -18,6 +18,7 @@ from supply_experiments.io.registry import (
     load_fixed_control,
     minimum_donors_for_alpha,
     save_experiment,
+    validate_experiment_transition,
 )
 from supply_experiments.io.tables import NATIONAL_HOLIDAYS, ORDERS_TABLE, TABLES
 
@@ -27,4 +28,5 @@ __all__ = [
     "ExperimentRecord", "REGISTRY_DDL", "ensure_registry",
     "save_experiment", "load_experiment", "load_fixed_control", "active_blocked_cities",
     "minimum_donors_for_alpha",
+    "validate_experiment_transition",
 ]

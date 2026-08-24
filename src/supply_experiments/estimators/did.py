@@ -110,12 +110,17 @@ def fit_did_panel(
     # efeito relativo: com normalização, tau já é ~relativo; sem, divide pelo baseline tratado
     if normalize_scale:
         att_pct = tau
-        # soma (não média) das escalas pré das tratadas: cada uma contribui
-        # com seu próprio nível ao efeito absoluto agregado
-        att_abs = tau * float(sum(scale[c] for c in treated))
+        # O coeficiente comum identifica a média relativa entre cidades. Com
+        # múltiplas tratadas, convertê-lo em efeito absoluto agregado exigiria
+        # homogeneidade de efeitos relativos. Não escondemos essa hipótese no
+        # campo principal: a quantidade implícita fica apenas em design_info.
+        att_abs_homogeneous = tau * float(sum(scale[c] for c in treated))
+        att_abs = att_abs_homogeneous if len(treated) == 1 else np.nan
     else:
         base = float(panel.outcome.loc[panel.index[pre_mask], treated].sum(axis=1).mean())
-        att_abs, att_pct = tau * len(treated), (tau * len(treated)) / base if base else np.nan
+        att_abs_homogeneous = tau * len(treated)
+        att_abs = att_abs_homogeneous if len(treated) == 1 else np.nan
+        att_pct = att_abs_homogeneous / base if base else np.nan
 
     return DiDFit(
         att=att_abs, att_pct=att_pct,
@@ -123,6 +128,9 @@ def fit_did_panel(
         design_info={"X_names": names, "Xd": Xd, "yd": yd, "city_codes": city_codes,
                      "treated_cities": treated, "control_cities": control,
                      "normalize_scale": normalize_scale, "scale": scale,
+                     "estimand": "equal_city_average_relative_effect",
+                     "att_abs_homogeneous_relative_effect": att_abs_homogeneous,
+                     "att_abs_requires_homogeneous_effects": len(treated) > 1,
                      "window": window, "holidays": list(holidays or []),
                      "n_time_periods": int(date_codes.max() + 1)},
         success=True,

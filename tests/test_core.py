@@ -21,7 +21,10 @@ from supply_experiments.estimators.ascm import fit_ascm
 from supply_experiments.estimators.did import fit_did_panel
 from supply_experiments.estimators.scm import fit_scm
 from supply_experiments.estimators.sdid import fit_sdid
-from supply_experiments.inference.bootstrap import wild_cluster_bootstrap
+from supply_experiments.inference.bootstrap import (
+    UnsupportedFewTreatedClustersError,
+    wild_cluster_bootstrap,
+)
 from supply_experiments.inference.conformal import conformal_inference
 from supply_experiments.inference.permutation import placebo_inference
 from supply_experiments.io.registry import ExperimentRecord, minimum_donors_for_alpha
@@ -118,19 +121,31 @@ def test_group_placebos_match_number_of_treated_cities():
     assert np.isfinite(inf.p_value)
 
 
-def test_group_placebos_pass_treated_count_to_sdid():
+def test_group_placebos_enforce_the_mean_sdid_estimand():
     panel = make_synthetic_panel(seed=62, n_cities=12, treat_effect=0.05,
                                  treated=["CITY_01", "CITY_03"], treat_start_idx=300)
     args = split_panel(panel, ["CITY_01", "CITY_03"])
     seen = []
 
-    def recording_sdid(*fit_args, n_treated_units=1):
-        seen.append(n_treated_units)
-        return fit_sdid(*fit_args, n_treated_units=n_treated_units)
+    def recording_sdid(
+        *fit_args, n_treated_units=1, treated_aggregation="sum"
+    ):
+        seen.append((n_treated_units, treated_aggregation))
+        return fit_sdid(
+            *fit_args,
+            n_treated_units=n_treated_units,
+            treated_aggregation=treated_aggregation,
+        )
 
-    placebo_inference(recording_sdid, *args, n_treated_units=2,
-                      max_group_placebos=5, seed=7)
-    assert seen and set(seen) == {2}
+    placebo_inference(
+        recording_sdid,
+        *args,
+        fit_kwargs={"n_treated_units": 999, "treated_aggregation": "sum"},
+        n_treated_units=2,
+        max_group_placebos=5,
+        seed=7,
+    )
+    assert seen and set(seen) == {(2, "mean")}
 
 
 def test_failed_real_fit_does_not_report_significant_permutation_pvalue():
@@ -151,8 +166,13 @@ def test_aa_calibration_supports_multiple_treated_cities():
         n_runs=12, n_treated=2, n_donors=8, min_valid_runs=10,
         max_group_placebos=10,
     )
-    assert aa.n_runs == 12
-    assert aa.details["n_placebos"].between(8, 10).all()
+    assert aa.requested_runs == 12
+    assert len(aa.details) == 12
+    assert aa.n_runs >= 10
+    valid = aa.details.loc[aa.details["valid"]]
+    assert len(valid) == aa.n_runs
+    assert valid["n_placebos"].between(8, 10).all()
+    assert aa.invalid_rate == pytest.approx((12 - aa.n_runs) / 12)
 
 
 @pytest.mark.slow
@@ -176,7 +196,7 @@ def test_conformal_covers_truth():
     assert conf.p_value <= 0.20  # efeito de 10% deve ser detectável
 
 
-def test_wild_cluster_bootstrap_runs_and_rejects_effect():
+def test_wild_cluster_bootstrap_fails_closed_with_few_treated_clusters():
     panel = make_synthetic_panel(seed=8, treat_effect=0.12,
                                  treated=["CITY_01", "CITY_02"], treat_start_idx=300)
     w = ExperimentWindow(start_date=panel.index[300].date(),
@@ -185,24 +205,25 @@ def test_wild_cluster_bootstrap_runs_and_rejects_effect():
     fit = fit_did_panel(panel, ["CITY_01", "CITY_02"], controls, w)
     assert fit.success
     assert abs(fit.att_pct - 0.12) < 0.04
-    res = wild_cluster_bootstrap(fit, n_boot=399, seed=1)
-    assert res.p_value < 0.10
-    assert res.weight_type in ("webb", "rademacher")
+    with pytest.raises(UnsupportedFewTreatedClustersError, match="found 2"):
+        wild_cluster_bootstrap(fit, n_boot=399, seed=1)
 
 
 @pytest.mark.slow
-def test_wild_cluster_bootstrap_null_calibrated():
-    rejections = 0
-    n = 12
-    for seed in range(n):
-        panel = make_synthetic_panel(seed=200 + seed, n_cities=20)
-        w = ExperimentWindow(start_date=panel.index[300].date(),
-                             end_date=panel.index[334].date(), pre_window_days=120)
-        fit = fit_did_panel(panel, ["CITY_01", "CITY_02"],
-                            [c for c in panel.cities if c not in ("CITY_01", "CITY_02")][:12], w)
-        if wild_cluster_bootstrap(fit, n_boot=199, seed=seed).p_value <= 0.10:
-            rejections += 1
-    assert rejections <= 4  # ~10% esperado; tolera flutuação binomial
+def test_wild_cluster_bootstrap_diagnostic_is_deterministic_above_misuse_cutoff():
+    panel = make_synthetic_panel(seed=200, n_cities=20)
+    w = ExperimentWindow(start_date=panel.index[300].date(),
+                         end_date=panel.index[334].date(), pre_window_days=120)
+    treated = ["CITY_01", "CITY_02", "CITY_03", "CITY_04"]
+    fit = fit_did_panel(
+        panel, treated, [c for c in panel.cities if c not in treated][:12], w,
+    )
+    first = wild_cluster_bootstrap(fit, n_boot=199, seed=7)
+    second = wild_cluster_bootstrap(fit, n_boot=199, seed=7)
+    assert not first.valid_for_inference and first.n_treated_clusters == 4
+    assert "diagnostic only" in first.diagnostic
+    assert first.p_value == second.p_value
+    assert np.array_equal(first.boot_t, second.boot_t)
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +339,8 @@ def test_analyze_experiment_end_to_end_and_antipeeking():
     atts = frame.set_index("method")["att_pct"]
     for m in ("scm", "ascm", "sdid"):
         assert abs(atts[m] - true_eff) < 0.04
-    assert "CONCORDANTE" in rep.triangulation
+    assert "DESCRIPTIVE AGREEMENT ONLY" in rep.triangulation
+    assert rep.decision == "DIAGNOSTIC_ONLY"
     assert not rep.guardrails.empty
 
 
@@ -395,7 +417,7 @@ def test_revalidate_fixed_control_pass_and_fail():
     control = ["CITY_01", "CITY_04", "CITY_07", "CITY_10", "CITY_13"]
 
     val = revalidate_fixed_control(panel, control, window_days=90)
-    assert val.passed and val.p_value >= 0.05
+    assert val.passed and val.p_value <= 0.05
     assert val.corr > 0.5
 
     # injeta tendência divergente no controle nos últimos 90 dias -> reprova

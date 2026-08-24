@@ -1,0 +1,12 @@
+include LICENSE
+include README.md
+include CHANGELOG.md
+include calibration_certificate.py
+include make_notebooks.py
+recursive-include docs *.md
+prune docs/causal-plans
+recursive-include notebooks *.ipynb
+recursive-include tests *.py
+global-exclude .DS_Store
+global-exclude *.py[cod]
+global-exclude __pycache__

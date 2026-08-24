@@ -19,13 +19,15 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 import pandas as pd
 import scipy
+from scipy.stats import beta as beta_dist
 
 from supply_experiments.calibration.aa import AACalibration, run_aa_calibration
 from supply_experiments.design.power import PowerResult, power_analysis
+from supply_experiments.design.spec import DesignSpec
 from supply_experiments.estimators.scm import fit_scm
 from supply_experiments.synthetic import make_synthetic_panel
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "2.0.0"
 DEFAULT_OUTPUT_DIR = Path("calibration-artifacts")
 TEXT_FILENAME = "calibration_certificate.txt"
 JSON_FILENAME = "calibration_certificate.json"
@@ -35,16 +37,20 @@ PANEL_N_DAYS = 430
 PANEL_SEED = 99
 PRE_DAYS = 120
 POST_DAYS = 35
-AA_RUNS = 120
+AA_RUNS = 400
 N_TREATED = 2
 NAIVE_CONTROL_CITIES = 10
 NAIVE_SEED = 2026
 FRAMEWORK_DONORS = 15
 FRAMEWORK_ALPHA = 0.10
 FRAMEWORK_SEED = 7
-FRAMEWORK_MIN_VALID_RUNS = 100
+FRAMEWORK_MIN_VALID_RUNS = 380
 FRAMEWORK_MIN_KS_P_VALUE = 0.01
+FRAMEWORK_MAX_FPR_INFLATION = 0.05
+FRAMEWORK_MAX_INVALID_RATE = 0.05
 FRAMEWORK_MAX_GROUP_PLACEBOS = 30
+FRAMEWORK_ASSIGNMENT_MECHANISM = "randomized"
+FRAMEWORK_MAX_PRE_RMSPE = None
 PERMUTATION_GROUP_SEED = 123
 POWER_TREATED = ("CITY_03", "CITY_07")
 POWER_DONORS = 18
@@ -196,6 +202,10 @@ def build_certificate(
         raise ValueError(
             "Power simulation count does not match the canonical certificate design"
         )
+    if aa.assignment_mechanism != FRAMEWORK_ASSIGNMENT_MECHANISM:
+        raise ValueError("A/A assignment mechanism does not match the canonical design")
+    if power.assignment_mechanism != FRAMEWORK_ASSIGNMENT_MECHANISM:
+        raise ValueError("Power assignment mechanism does not match the canonical design")
     if not np.isclose(power.alpha, FRAMEWORK_ALPHA):
         raise ValueError("Power alpha does not match the canonical certificate design")
 
@@ -204,7 +214,14 @@ def build_certificate(
     if len(aa.details) != AA_RUNS:
         raise ValueError("A/A details do not match the canonical requested run count")
     aa_p_values = pd.to_numeric(aa.details["p_value"], errors="coerce").to_numpy(float)
-    aa_valid_rows = aa.details.loc[np.isfinite(aa_p_values)]
+    aa_valid_mask = np.isfinite(aa_p_values)
+    if "valid" in aa.details:
+        aa_valid_mask &= aa.details["valid"].fillna(False).astype(bool).to_numpy()
+    elif "valid_for_decision" in aa.details:
+        aa_valid_mask &= (
+            aa.details["valid_for_decision"].fillna(False).astype(bool).to_numpy()
+        )
+    aa_valid_rows = aa.details.loc[aa_valid_mask]
     if len(aa_valid_rows) != aa.n_runs:
         raise ValueError("A/A valid-run summary contradicts its run details")
     framework_rejections = int(aa_valid_rows["reject"].astype(bool).sum())
@@ -216,21 +233,53 @@ def build_certificate(
         and not np.isclose(detailed_fpr, reported_fpr)
     ):
         raise ValueError("A/A false-positive rate contradicts its run details")
+    if aa.requested_runs not in (0, AA_RUNS):
+        raise ValueError("A/A requested-run summary contradicts the canonical design")
     interval_lower = _finite_float(aa.fpr_ci[0])
     interval_upper = _finite_float(aa.fpr_ci[1])
     ks_p_value = _finite_float(aa.ks_p_value)
-    nominal_alpha_inside_interval = bool(
-        interval_lower is not None
-        and interval_upper is not None
-        and interval_lower <= aa.alpha <= interval_upper
-    )
+    invalid_rate = (AA_RUNS - aa.n_runs) / AA_RUNS
+    reported_invalid_rate = _finite_float(aa.invalid_rate)
+    if reported_invalid_rate is not None and not np.isclose(
+        reported_invalid_rate, invalid_rate
+    ):
+        raise ValueError("A/A invalid-rate summary contradicts its run details")
+
+    if aa.n_runs:
+        computed_fpr_upper_bound = (
+            float(
+                beta_dist.ppf(
+                    0.95,
+                    framework_rejections + 1,
+                    aa.n_runs - framework_rejections,
+                )
+            )
+            if framework_rejections < aa.n_runs
+            else 1.0
+        )
+    else:
+        computed_fpr_upper_bound = 1.0
+    reported_fpr_upper_bound = _finite_float(aa.fpr_upper_bound)
+    if reported_fpr_upper_bound is not None and not np.isclose(
+        reported_fpr_upper_bound, computed_fpr_upper_bound
+    ):
+        raise ValueError("A/A FPR upper bound contradicts its run details")
+    fpr_upper_bound = computed_fpr_upper_bound
+    max_fpr = FRAMEWORK_ALPHA + FRAMEWORK_MAX_FPR_INFLATION
+    reported_max_fpr = _finite_float(aa.max_fpr)
+    if reported_max_fpr is not None and not np.isclose(reported_max_fpr, max_fpr):
+        raise ValueError("A/A maximum tolerated FPR contradicts the canonical design")
+
     minimum_valid_runs_met = bool(aa.n_runs >= FRAMEWORK_MIN_VALID_RUNS)
+    maximum_invalid_rate_met = bool(invalid_rate <= FRAMEWORK_MAX_INVALID_RATE)
+    fpr_upper_bound_met = bool(fpr_upper_bound <= max_fpr)
     minimum_ks_p_value_met = bool(
         ks_p_value is not None and ks_p_value >= FRAMEWORK_MIN_KS_P_VALUE
     )
     aa_calibrated = bool(
         minimum_valid_runs_met
-        and nominal_alpha_inside_interval
+        and maximum_invalid_rate_met
+        and fpr_upper_bound_met
         and minimum_ks_p_value_met
     )
     if bool(aa.passed) != aa_calibrated:
@@ -264,6 +313,11 @@ def build_certificate(
     return {
         "schema_version": SCHEMA_VERSION,
         "certificate_type": "synthetic_statistical_calibration",
+        "claim_scope": {
+            "configuration": "bundled_seeded_randomized_scm_fixture",
+            "authoritative_for_user_designs": False,
+            "requires_user_design_calibration": True,
+        },
         "data_scope": {
             "kind": "synthetic_only",
             "contains_real_data": False,
@@ -311,8 +365,12 @@ def build_certificate(
                 "framework_donors": FRAMEWORK_DONORS,
                 "framework_alpha": FRAMEWORK_ALPHA,
                 "framework_max_group_placebos": FRAMEWORK_MAX_GROUP_PLACEBOS,
+                "framework_assignment_mechanism": FRAMEWORK_ASSIGNMENT_MECHANISM,
+                "framework_max_pre_rmspe": FRAMEWORK_MAX_PRE_RMSPE,
                 "minimum_valid_runs": FRAMEWORK_MIN_VALID_RUNS,
                 "minimum_ks_p_value": FRAMEWORK_MIN_KS_P_VALUE,
+                "maximum_fpr_inflation": FRAMEWORK_MAX_FPR_INFLATION,
+                "maximum_invalid_rate": FRAMEWORK_MAX_INVALID_RATE,
             },
             "power": {
                 "treated_synthetic_ids": list(POWER_TREATED),
@@ -323,6 +381,7 @@ def build_certificate(
                 "pre_days": PRE_DAYS,
                 "post_days": POST_DAYS,
                 "alpha": FRAMEWORK_ALPHA,
+                "assignment_mechanism": FRAMEWORK_ASSIGNMENT_MECHANISM,
                 "effect_grid": [float(effect) for effect in power.effect_grid],
                 "requested_simulations_per_effect": POWER_SIMS_PER_POINT,
                 "max_group_placebos": POWER_MAX_GROUP_PLACEBOS,
@@ -361,7 +420,8 @@ def build_certificate(
             },
             "framework_aa": {
                 "estimator": "scm",
-                "inference": "in_space_permutation",
+                "inference": "symmetric_randomization_permutation",
+                "assignment_mechanism": aa.assignment_mechanism,
                 "alpha": float(aa.alpha),
                 "requested_runs": AA_RUNS,
                 "valid_runs": int(aa.n_runs),
@@ -374,21 +434,37 @@ def build_certificate(
                     "lower": interval_lower,
                     "upper": interval_upper,
                 },
-                "ks_uniformity_p_value": ks_p_value,
-                "median_placebo_att_bias": _finite_float(aa.median_att_bias),
-                "median_placebo_att_bias_role": "diagnostic_only",
+                "fpr_one_sided_upper_bound": {
+                    "method": "clopper_pearson",
+                    "level": 0.95,
+                    "value": fpr_upper_bound,
+                },
+                "invalid_rate": invalid_rate,
+                "discrete_rank_pit_ks_p_value": ks_p_value,
+                "median_real_att_bias": _finite_float(aa.median_att_bias),
+                "median_placebo_att": _finite_float(aa.median_placebo_att),
+                "att_diagnostics_role": "diagnostic_only",
+                "selection_scope": aa.selection_scope,
+                "procedure_scope": aa.procedure_scope,
+                "design_fingerprint": aa.design_fingerprint or None,
+                "calibration_fingerprint": aa.calibration_fingerprint or None,
+                "failure_reasons": list(aa.failure_reasons),
                 "pass_criteria": {
                     "minimum_valid_runs": FRAMEWORK_MIN_VALID_RUNS,
                     "minimum_ks_p_value": FRAMEWORK_MIN_KS_P_VALUE,
+                    "maximum_invalid_rate": FRAMEWORK_MAX_INVALID_RATE,
+                    "maximum_fpr": max_fpr,
                     "minimum_valid_runs_met": minimum_valid_runs_met,
-                    "nominal_alpha_inside_fpr_interval": nominal_alpha_inside_interval,
+                    "maximum_invalid_rate_met": maximum_invalid_rate_met,
+                    "fpr_upper_bound_met": fpr_upper_bound_met,
                     "minimum_ks_p_value_met": minimum_ks_p_value_met,
                 },
                 "passed": aa_calibrated,
             },
             "power_analysis": {
                 "estimator": "scm",
-                "inference": "in_space_permutation",
+                "inference": "symmetric_randomization_permutation",
+                "assignment_mechanism": FRAMEWORK_ASSIGNMENT_MECHANISM,
                 "requested_simulations_per_effect": POWER_SIMS_PER_POINT,
                 "points": power_points,
                 "false_positive_rate": power_fpr,
@@ -403,9 +479,11 @@ def build_certificate(
             "power_analysis_complete": power_complete,
             "passed": certificate_passed,
             "rule": (
-                "At least 100 valid A/A runs, nominal alpha inside the exact 95% "
-                "binomial interval, KS uniformity p-value at least 0.01, and no "
-                "failed naive-baseline or power simulations."
+                f"At least {FRAMEWORK_MIN_VALID_RUNS} valid A/A runs, invalid-run "
+                "rate at most 5%, the "
+                "one-sided 95% FPR upper bound at most alpha + 0.05, randomized-"
+                "PIT discrete-rank KS p-value at least 0.01, and no failed "
+                "naive-baseline or power simulations."
             ),
         },
     }
@@ -424,7 +502,7 @@ def render_human_report(certificate: Dict[str, Any]) -> str:
 
     lines = [
         "=" * 72,
-        "STATISTICAL CALIBRATION CERTIFICATE — A/A (true effect = 0)",
+        "STATISTICAL CALIBRATION CERTIFICATE — RANDOMIZED A/A (true effect = 0)",
         "=" * 72,
         "",
         (
@@ -432,10 +510,15 @@ def render_human_report(certificate: Dict[str, Any]) -> str:
             "common factor + DOW + AR(1)"
         ),
         (
+            "Scope: bundled seeded randomized SCM fixture only; this is not an "
+            "authoritative certificate for a user's design."
+        ),
+        (
             f"A/A runs: requested={framework['requested_runs']}, "
             f"valid={framework['valid_runs']}, failed={framework['failed_runs']} | "
             f"pre={aa_design['pre_days']}d, post={aa_design['post_days']}d, "
-            f"treated={aa_design['n_treated']}"
+            f"treated={aa_design['n_treated']}, "
+            f"assignment={framework['assignment_mechanism']}"
         ),
         "",
         "NAIVE BASELINE (aggregated OLS, classical t-test):",
@@ -447,7 +530,7 @@ def render_human_report(certificate: Dict[str, Any]) -> str:
         f"  FPR @ alpha=0.05: {_format_percent(baseline[0]['fpr']):>6}   (expected: 5%)",
         f"  FPR @ alpha=0.10: {_format_percent(baseline[1]['fpr']):>6}   (expected: 10%)",
         "",
-        "THIS FRAMEWORK (SCM + in-space permutation):",
+        "THIS FRAMEWORK (SCM + symmetric randomization permutation):",
         (
             f"  FPR @ alpha={framework['alpha']:.2f}: "
             f"{_format_percent(framework['false_positive_rate']):>6}   "
@@ -456,17 +539,22 @@ def render_human_report(certificate: Dict[str, Any]) -> str:
             f"{_format_percent(fpr_interval['upper'])}]"
         ),
         (
-            "  KS p-value (p-values ~ U(0,1)): "
-            f"{_format_decimal(framework['ks_uniformity_p_value'])}"
+            "  Discrete-rank randomized-PIT KS p-value: "
+            f"{_format_decimal(framework['discrete_rank_pit_ks_p_value'])}"
         ),
         (
-            "  Median placebo ATT bias: "
-            f"{_format_percent(framework['median_placebo_att_bias'], digits=2, signed=True)}"
+            "  One-sided 95% FPR upper bound: "
+            f"{_format_percent(framework['fpr_one_sided_upper_bound']['value'])} "
+            f"(maximum {_format_percent(framework['pass_criteria']['maximum_fpr'])})"
+        ),
+        (
+            "  Median real ATT bias: "
+            f"{_format_percent(framework['median_real_att_bias'], digits=2, signed=True)}"
         ),
         f"  A/A CALIBRATED: {'YES' if framework['passed'] else 'NO'}",
         "",
         "=" * 72,
-        "POWER CURVE (design: 2 treated, 18 donors, 35 days, SCM)",
+            "POWER CURVE (illustrative randomized design: 2 treated, 18 donors, 35 days, SCM)",
         "=" * 72,
     ]
     for point in power["points"]:
@@ -500,7 +588,10 @@ def render_human_report(certificate: Dict[str, Any]) -> str:
                 f"(failed simulations: {failed_power_simulations})"
             ),
             "",
-            "Framework rule: approve a design only when MDE <= expected effect.",
+            (
+                "Illustrative power gate: MDE <= expected effect, only after the "
+                "actual design has matching calibration and defensible assumptions."
+            ),
             (
                 "CERTIFICATE VERDICT: "
                 f"{'PASS' if certificate['verdict']['passed'] else 'FAIL'}"
@@ -576,9 +667,33 @@ def run_calibration() -> Dict[str, Any]:
         min_ks_p_value=FRAMEWORK_MIN_KS_P_VALUE,
         max_group_placebos=FRAMEWORK_MAX_GROUP_PLACEBOS,
         permutation_seed=PERMUTATION_GROUP_SEED,
+        assignment_mechanism=FRAMEWORK_ASSIGNMENT_MECHANISM,
+        max_pre_rmspe=FRAMEWORK_MAX_PRE_RMSPE,
     )
 
     donors = [city for city in cities if city not in POWER_TREATED][:POWER_DONORS]
+    power_spec = DesignSpec(
+        treated_units=POWER_TREATED,
+        donor_units=tuple(donors),
+        estimator_names=("scm",),
+        pre_days=PRE_DAYS,
+        post_days=POST_DAYS,
+        alpha=FRAMEWORK_ALPHA,
+        max_group_placebos=POWER_MAX_GROUP_PLACEBOS,
+        effect_grid=POWER_EFFECT_GRID,
+        assignment_mechanism=FRAMEWORK_ASSIGNMENT_MECHANISM,
+        eligible_units=tuple(cities),
+        max_pre_rmspe=FRAMEWORK_MAX_PRE_RMSPE,
+        require_calibration=False,
+        calibration_scope="none",
+        power_target=0.80,
+        power_n_sims_per_point=POWER_SIMS_PER_POINT,
+        power_min_valid_sims_per_point=POWER_SIMS_PER_POINT,
+        power_max_invalid_rate=0.0,
+        seed=POWER_SEED,
+        permutation_seed=PERMUTATION_GROUP_SEED,
+        window_spacing_days=1,
+    )
     power = power_analysis(
         panel,
         POWER_TREATED,
@@ -592,6 +707,7 @@ def run_calibration() -> Dict[str, Any]:
         seed=POWER_SEED,
         max_group_placebos=POWER_MAX_GROUP_PLACEBOS,
         permutation_seed=PERMUTATION_GROUP_SEED,
+        design_spec=power_spec,
     )
     return build_certificate(naive_p_values, aa, power)
 

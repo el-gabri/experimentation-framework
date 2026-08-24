@@ -1,14 +1,36 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "supply-experiments"
-version = "1.0.3"
-description = "Geo-experimentation framework: synthetic control, SDID and permutation inference for city-level experiments"
-readme = "README.md"
-license = { text = "MIT" }
-requires-python = ">=3.9"
+version = "2.0.0a1"
+description = "Python design and audit workflow for small-market geo experiments"
+readme = { file = "README.md", content-type = "text/markdown" }
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Gabriel Lisboa" },
+]
+requires-python = ">=3.10"
+keywords = [
+    "causal-inference",
+    "experimentation",
+    "geo-experiments",
+    "synthetic-control",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
 dependencies = [
     "numpy>=1.23",
     "pandas>=1.5",
@@ -17,16 +39,29 @@ dependencies = [
 
 [project.optional-dependencies]
 spark = ["pyspark>=3.4"]
+test = ["pytest>=8.0"]
 dev = [
+    "build>=1.2",
     "pytest>=8.0",
     "ruff>=0.6",
     "mypy>=1.10",
     "nbformat>=5.9",
+    "twine>=5.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/el-gabri/experimentation-framework"
+Documentation = "https://github.com/el-gabri/experimentation-framework#readme"
+Repository = "https://github.com/el-gabri/experimentation-framework.git"
+Issues = "https://github.com/el-gabri/experimentation-framework/issues"
+
+[tool.setuptools]
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["supply_experiments*"]
+namespaces = false
 
 [tool.setuptools.package-data]
 supply_experiments = ["py.typed"]
@@ -38,7 +73,7 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B"]
@@ -52,5 +87,7 @@ ignore = ["E501"]  # linhas longas em fórmulas matemáticas são mais legíveis
 
 [tool.mypy]
 python_version = "3.10"
+follow_imports = "skip"
+no_site_packages = true
 ignore_missing_imports = true
 warn_unused_ignores = true

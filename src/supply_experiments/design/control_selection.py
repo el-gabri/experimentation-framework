@@ -84,7 +84,27 @@ def f_test_parallel_trends(
     z = float(beta[1] / se) if se > 0 else np.nan
     p = float(2.0 * norm.sf(abs(z))) if np.isfinite(z) else np.nan
     return {"F": float(z ** 2) if np.isfinite(z) else np.nan,
-            "p_value": p, "coef_interaction": float(beta[1])}
+            "p_value": p, "coef_interaction": float(beta[1]),
+            "se_interaction": se}
+
+
+def _parallel_trend_equivalence(
+    coef: float, se: float, margin: float,
+) -> float:
+    """TOST p-value para ``-margin < coef < margin``.
+
+    O coeficiente está na escala normalizada usada por
+    :func:`f_test_parallel_trends` e por um desvio-padrão de tempo.
+    """
+    from scipy.stats import norm
+
+    if margin <= 0:
+        raise ValueError("equivalence_margin deve ser > 0")
+    if not np.isfinite(coef) or not np.isfinite(se) or se <= 0:
+        return np.nan
+    p_lower = float(norm.sf((coef + margin) / se))  # H0: beta <= -margin
+    p_upper = float(norm.cdf((coef - margin) / se))  # H0: beta >= +margin
+    return max(p_lower, p_upper)
 
 
 def _subset_score(y_target: np.ndarray, y_sub: np.ndarray,
@@ -116,11 +136,14 @@ class ControlValidation:
     passed: bool
     window_days: int
     note: str = ""
+    difference_p_value: float = np.nan
+    coefficient: float = np.nan
+    equivalence_margin: float = np.nan
 
     def summary(self) -> str:
         status = "VÁLIDO" if self.passed else "REPROVADO — re-selecione no notebook 02"
         return (f"Controle fixo ({self.window_days}d recentes): "
-                f"p(tendências paralelas)={self.p_value:.3f} | corr={self.corr:.3f} "
+                f"p(equivalência)={self.p_value:.3f} | corr={self.corr:.3f} "
                 f"-> {status}{' | ' + self.note if self.note else ''}")
 
 
@@ -132,12 +155,16 @@ def revalidate_fixed_control(
     holidays: Optional[Sequence[str]] = None,
     target_exclude: Optional[Set[str]] = None,
     end_date=None,
+    equivalence_margin: float = 0.10,
+    min_corr: float = 0.80,
 ) -> ControlValidation:
     """Revalidação barata do controle fixo em janela RECENTE (não vista na
     seleção original): teste F de tendências paralelas contra o target limpo.
 
-    Rode antes de cada experimento que use o DiD complementar. p >= alpha
-    mantém o controle; reprovação indica re-seleção (notebook 02). O target
+    Rode antes de cada experimento que use o DiD complementar. O controle só é
+    aceito quando um TOST rejeita tendências fora de ``±equivalence_margin``
+    e a correlação excede ``min_corr``. Não se interpreta falha em rejeitar uma
+    diferença como evidência de equivalência. O target
     exclui o próprio controle e as tratadas do experimento corrente.
     `end_date` (date): último dia considerado — passe o dia anterior ao início
     do tratamento para validar apenas no pré-período."""
@@ -161,10 +188,19 @@ def revalidate_fixed_control(
     a = tgt / (np.mean(tgt) or 1.0)
     b = sub / (np.mean(sub) or 1.0)
     corr = float(np.corrcoef(a, b)[0, 1]) if np.std(b) > 1e-12 else 0.0
+    equiv_p = _parallel_trend_equivalence(
+        float(tr["coef_interaction"]), float(tr["se_interaction"]),
+        equivalence_margin,
+    )
     note = f"cidades fora do painel: {missing}" if missing else ""
-    return ControlValidation(p_value=float(tr["p_value"]), corr=corr,
-                             passed=bool(tr["p_value"] >= alpha),
-                             window_days=window_days, note=note)
+    return ControlValidation(
+        p_value=equiv_p, corr=corr,
+        passed=bool(np.isfinite(equiv_p) and equiv_p <= alpha and corr >= min_corr),
+        window_days=window_days, note=note,
+        difference_p_value=float(tr["p_value"]),
+        coefficient=float(tr["coef_interaction"]),
+        equivalence_margin=equivalence_margin,
+    )
 
 
 def select_fixed_control(
@@ -181,6 +217,8 @@ def select_fixed_control(
     score_weights: Optional[Dict[str, float]] = None,
     max_swap_passes: int = 3,
     seed: int = 7,  # reservado para eventuais restarts aleatórios do greedy; não usado hoje
+    equivalence_margin: float = 0.10,
+    min_holdout_corr: float = 0.80,
 ) -> ControlSelectionResult:
     weights = score_weights or {}
     city_rupture = city_rupture or {}
@@ -250,12 +288,20 @@ def select_fixed_control(
     a = tgt_h / (np.mean(tgt_h) or 1.0)
     b = sub_h / (np.mean(sub_h) or 1.0)
     corr_h = float(np.corrcoef(a, b)[0, 1]) if np.std(b) > 1e-12 else 0.0
-    passed = bool(tr["p_value"] >= alpha)
+    equiv_p = _parallel_trend_equivalence(
+        float(tr["coef_interaction"]), float(tr["se_interaction"]),
+        equivalence_margin,
+    )
+    passed = bool(np.isfinite(equiv_p) and equiv_p <= alpha and corr_h >= min_holdout_corr)
 
     return ControlSelectionResult(
         cities=selected, train_score=float(best),
-        holdout_p_value=float(tr["p_value"]), holdout_passed=passed,
+        holdout_p_value=equiv_p, holdout_passed=passed,
         holdout_corr=corr_h,
-        metrics={"holdout_F": tr["F"], "holdout_coef": tr["coef_interaction"],
+        metrics={"holdout_F": tr["F"], "holdout_difference_p": tr["p_value"],
+                 "holdout_coef": tr["coef_interaction"],
+                 "holdout_se": tr["se_interaction"],
+                 "equivalence_margin": equivalence_margin,
+                 "min_holdout_corr": min_holdout_corr,
                  "train_frac": train_frac, "alpha": alpha},
     )

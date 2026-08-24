@@ -14,12 +14,14 @@ venv/
 # Tooling / IDE
 .idea/
 .vscode/
+/.claude/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
 .coverage
 htmlcov/
 /calibration-artifacts/
+/docs/causal-plans/
 
 # OS
 .DS_Store

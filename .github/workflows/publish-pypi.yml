@@ -1,0 +1,156 @@
+name: Publish to PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag (for example v2.0.0a1)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Verify tag and package version
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          WORKFLOW_REF: ${{ github.ref }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import tomllib
+          import urllib.parse
+          import urllib.request
+
+
+          def github_json(path: str) -> dict:
+              request = urllib.request.Request(
+                  "https://api.github.com" + path,
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          tag = os.environ["RELEASE_TAG"]
+          assert os.environ["WORKFLOW_REF"] == "refs/heads/main", (
+              "the release workflow must be dispatched from protected main"
+          )
+          tag_commit = subprocess.check_output(
+              ["git", "rev-parse", f"refs/tags/{tag}^{{commit}}"], text=True
+          ).strip()
+          head_commit = subprocess.check_output(
+              ["git", "rev-parse", "HEAD"], text=True
+          ).strip()
+          assert head_commit == tag_commit, f"checked-out commit is not tag {tag!r}"
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          encoded_tag = urllib.parse.quote(tag, safe="")
+          tag_ref = github_json(f"/repos/{repository}/git/ref/tags/{encoded_tag}")
+          assert tag_ref["object"]["type"] == "tag", (
+              f"release tag {tag!r} must be an annotated, signed tag"
+          )
+          tag_object = github_json(
+              f"/repos/{repository}/git/tags/{tag_ref['object']['sha']}"
+          )
+          assert tag_object["tag"] == tag, (
+              "the signed tag object's name differs from the requested release tag"
+          )
+          verification = tag_object.get("verification") or {}
+          assert verification.get("verified") is True, (
+              f"GitHub did not verify the signature for tag {tag!r}: "
+              f"{verification.get('reason', 'unknown reason')}"
+          )
+          assert tag_object["object"]["type"] == "commit", (
+              "nested release tags are not supported"
+          )
+          assert tag_object["object"]["sha"] == tag_commit, (
+              "GitHub's verified tag target differs from the checked-out commit"
+          )
+
+          subprocess.run(
+              [
+                  "git",
+                  "fetch",
+                  "--no-tags",
+                  "origin",
+                  "+refs/heads/main:refs/remotes/origin/main",
+              ],
+              check=True,
+          )
+          ancestry = subprocess.run(
+              [
+                  "git",
+                  "merge-base",
+                  "--is-ancestor",
+                  tag_commit,
+                  "refs/remotes/origin/main",
+              ],
+              check=False,
+          )
+          assert ancestry.returncode == 0, (
+              f"tag {tag!r} does not point to a commit on origin/main"
+          )
+
+          version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]
+          assert tag == f"v{version}", f"tag {tag!r} does not match version {version!r}"
+          PY
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests calibration_certificate.py make_notebooks.py
+      - run: mypy src
+      - name: Verify generated notebooks
+        run: |
+          python make_notebooks.py
+          git diff --exit-code -- notebooks
+      - name: Run the complete statistical test suite
+        run: pytest tests/ -q
+      - name: Reproduce the release calibration certificate
+        run: python calibration_certificate.py --output-dir calibration-artifacts
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - name: Upload verified distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pypi-distributions
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: verify-build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/supply-experiments
+    permissions:
+      id-token: write
+    steps:
+      - name: Download verified distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pypi-distributions
+          path: dist/
+      - name: Publish with PyPI Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
