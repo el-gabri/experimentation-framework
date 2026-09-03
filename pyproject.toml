@@ -67,6 +67,11 @@ namespaces = false
 supply_experiments = ["py.typed"]
 
 [tool.pytest.ini_options]
+# `tests/test_calibration_certificate.py` importa `calibration_certificate`, um
+# script na raiz do repositório e fora do pacote instalável (src-layout). Só
+# `python -m pytest` insere o CWD em sys.path; a CI invoca `pytest` direto, que
+# não insere. Declarar o rootdir aqui faz as duas formas resolverem o import.
+pythonpath = ["."]
 markers = [
     "slow: statistical calibration tests (effect recovery, A/A FPR) — slower, run in CI",
 ]
