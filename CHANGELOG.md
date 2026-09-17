@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.0.0a2
+
+- Reject ambiguous city-name/state mappings before Spark aggregates distinct geographies.
+- Require an explicit zero-activity assumption to fill absent city-days, reject invalid
+  observed GMV, and keep incomplete rupture telemetry unavailable rather than zero.
+- Validate daily calendar coverage and consistent local timestamps, including ratio
+  frames; explicit filling no longer replaces non-finite observed values.
+- Execute supplied directional decision rules in single-estimator A/A calibration.
+- Reject altered fixed-control/DiD membership and incomplete or unidentified DiD windows.
+- Reabsorb city/date fixed effects in each wild-cluster bootstrap draw while retaining
+  the diagnostic-only status and few-treated-cluster guard.
+- Advance the implementation binding: designs and calibration artifacts from `2.0.0a1`
+  must be regenerated for this version.
+
 ## 2.0.0a1
 
 - Corrected multi-treated estimands to compare treated means with donor counterfactuals.

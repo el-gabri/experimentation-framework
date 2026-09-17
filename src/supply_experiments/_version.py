@@ -1,6 +1,6 @@
 """Single source of truth for the executable statistical implementation."""
 
-IMPLEMENTATION_VERSION = "2.0.0a1"
+IMPLEMENTATION_VERSION = "2.0.0a2"
 
 
 def require_runtime_version(bound_version: str) -> None:

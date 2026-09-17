@@ -3,6 +3,27 @@
 `2.0.0a1` intentionally breaks several prototype defaults that could produce a
 statistically misleading result.
 
+## Updating from 2.0.0a1 to 2.0.0a2
+
+- Recreate the `DesignSpec` and rerun its power and A/A procedure under the new
+  implementation version. Old artifacts intentionally fail the runtime-version check.
+- Supply one observation per local calendar day at a consistent local time. Timezones
+  are preserved across daylight-saving transitions; timestamps are not silently
+  normalized or merged. Ratio frames must use the outcome's timezone and local time.
+- `load_city_panel` rejects ambiguous city names spanning multiple states. Resolve the
+  geography identity upstream instead of combining distinct places under one name.
+- The Spark loader now rejects missing city-days by default. Set
+  `assume_missing_city_days_zero=True` only when source completeness guarantees absent
+  rows mean no activity. Invalid observed monetary values are rejected in either mode.
+- Incomplete rupture telemetry makes the optional guardrail unavailable. Set
+  `require_rupture_telemetry=True` when it is required for the design or selection score.
+- Fixed-control revalidation and panel DiD reject missing/duplicate members, overlapping
+  groups, and incomplete requested windows rather than analyzing a modified group or
+  period. Low-level DiD requires an identified, finite relative-effect estimate.
+- Single-estimator A/A now executes its supplied directional rule. Bootstrap diagnostics
+  can change because fixed effects are reabsorbed in every draw; their inferential
+  status remains diagnostic-only.
+
 ## Required changes
 
 - Python 3.9 is no longer supported; the 2.0 alpha requires Python 3.10 or newer.

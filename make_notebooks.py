@@ -30,7 +30,7 @@ md("""# 01 — ETL: painel de cidades e snapshots
 Cliente fino do pacote `supply_experiments`. Toda a lógica (filtros da base de
 pedidos, normalização de cidades, estatísticas de elegibilidade) vive no pacote
 — **uma única implementação**, testada, em vez das 4 cópias divergentes anteriores."""),
-    py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-2.0.0a1-py3-none-any.whl --quiet --force-reinstall --no-deps
+    py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-2.0.0a2-py3-none-any.whl --quiet --force-reinstall --no-deps
 dbutils.library.restartPython()"""),
 py("""from supply_experiments.spark_io import load_city_panel, TABLES
 from supply_experiments.design.spillover import EligibilityCriteria, eligible_cities
@@ -44,8 +44,12 @@ TARGET_ENV = dbutils.widgets.get("target_env")
 DATE_START = dbutils.widgets.get("date_start")
 DATE_END   = dbutils.widgets.get("date_end")
 tables = TABLES[TARGET_ENV]"""),
-py("""# painel diário (GMV + num/den de ruptura) e stats por cidade — 1 chamada
-panel, stats = load_city_panel(spark, DATE_START, DATE_END)
+py("""# Só ative se a completude da fonte garantir que ausência significa zero atividade.
+ASSUME_MISSING_CITY_DAYS_ZERO = False
+panel, stats = load_city_panel(
+    spark, DATE_START, DATE_END,
+    assume_missing_city_days_zero=ASSUME_MISSING_CITY_DAYS_ZERO,
+)
 print(f"Painel: {len(panel.cities)} cidades x {len(panel.index)} dias")
 stats.head(10)"""),
 py("""# elegibilidade: filtros de volume + NOVOS critérios de qualidade de série
@@ -75,7 +79,7 @@ Princípios de design:
    de otimização) — elimina pre-testing contamination.
 2. **p-value fora do score**: score = correlação + forma + região + ruptura.
 3. **Target limpo**: Brasil excluindo o próprio controle e tratadas ativas."""),
-    py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-2.0.0a1-py3-none-any.whl --quiet --force-reinstall --no-deps
+    py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-2.0.0a2-py3-none-any.whl --quiet --force-reinstall --no-deps
 dbutils.library.restartPython()"""),
 py("""from supply_experiments.spark_io import (load_city_panel, TABLES,
                                           active_blocked_cities, NATIONAL_HOLIDAYS)
@@ -83,7 +87,13 @@ from supply_experiments.design.control_selection import select_fixed_control
 
 TARGET_ENV = "sandbox"
 tables = TABLES[TARGET_ENV]
-panel, stats = load_city_panel(spark, "2025-09-01", "2026-06-30")
+# Só ative após confirmar que ausência de linha significa zero atividade.
+ASSUME_MISSING_CITY_DAYS_ZERO = False
+panel, stats = load_city_panel(
+    spark, "2025-09-01", "2026-06-30",
+    assume_missing_city_days_zero=ASSUME_MISSING_CITY_DAYS_ZERO,
+    require_rupture_telemetry=True,  # ruptura participa do score de seleção
+)
 
 blocked = active_blocked_cities(spark, tables["registry"])
 print("Bloqueadas (experimentos ativos):", blocked)"""),
@@ -147,7 +157,7 @@ O registro só vira `approved` depois que **o mesmo `DesignSpec`** passa pelo po
 gate e por A/A do procedimento completo. Para seleção observacional de mercados,
 o callback de A/A deve reproduzir seleção, exclusões, estimadores e regra de decisão;
 um A/A com cidades sorteadas não autoriza o desenho selecionado."""),
-    py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-2.0.0a1-py3-none-any.whl --quiet --force-reinstall --no-deps
+    py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-2.0.0a2-py3-none-any.whl --quiet --force-reinstall --no-deps
 dbutils.library.restartPython()"""),
     py("""from dataclasses import replace
 from datetime import date, timedelta
@@ -180,7 +190,12 @@ SELECTOR_CONFIG = {
 }
 
 tables = TABLES["sandbox"]
-panel, stats = load_city_panel(spark, "2025-06-01", "2026-06-30")
+# Freeze the producer's missing-data assumption together with the registry record.
+DATA_POLICY = {"assume_missing_city_days_zero": False}
+panel, stats = load_city_panel(
+    spark, "2025-06-01", "2026-06-30",
+    **DATA_POLICY, require_rupture_telemetry=True,
+)
 blocked = active_blocked_cities(spark, tables["registry"])
 candidates = [c for c in stats.index if c in panel.cities
               and c not in blocked["treated_active"] | blocked["control_active"]]"""),
@@ -294,6 +309,7 @@ digest, late approval, or a mutation after approval."""),
                     "weight": None} for c in DONORS],
     mde_estimated=pw.mde_80, expected_effect=EXPECTED_EFFECT,
     decision_rule=json.dumps(RULE.to_dict(), sort_keys=True),
+    config_json=json.dumps({"data_policy": DATA_POLICY}, sort_keys=True),
     created_by=spark.sql("SELECT current_user()").first()[0],
 ).with_design_contract(spec, aa.calibration_fingerprint, power_result=pw)
 ensure_registry(spark, tables["registry"])
@@ -309,9 +325,10 @@ md("""# 04 — Final analysis bound to the approved design
 The notebook loads the immutable `DesignSpec` and exact calibration artifact from
 storage. Analysis before the registered end is blocked; explicit interim mode returns
 guardrails only. Estimator agreement is a sensitivity check, not independent evidence."""),
-py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-2.0.0a1-py3-none-any.whl --quiet --force-reinstall --no-deps
+py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-2.0.0a2-py3-none-any.whl --quiet --force-reinstall --no-deps
 dbutils.library.restartPython()"""),
-py("""from datetime import timedelta
+py("""import json
+from datetime import timedelta
 from pyspark.sql import functions as F
 
 from supply_experiments.calibration.aa import AACalibration
@@ -340,7 +357,11 @@ assert aa.matches_design(spec), 'calibration artifact does not match DesignSpec'
 py("""date_start = str(
     rec.start_date - timedelta(days=rec.pre_window_days + spec.anticipation_days)
 )
-panel, _ = load_city_panel(spark, date_start, str(rec.end_date))
+data_policy = json.loads(rec.config_json)["data_policy"]
+panel, _ = load_city_panel(
+    spark, date_start, str(rec.end_date), **data_policy,
+    require_rupture_telemetry="rupture_rate_order" in rec.guardrail_kpis,
+)
 treated = list(spec.treated_units)
 donors = list(spec.donor_units)
 window = ExperimentWindow(
@@ -360,7 +381,7 @@ if fixed:
     )
     print(val.summary())
     if val.passed:
-        did_control = [city for city in fixed if city not in set(treated)]
+        did_control = list(fixed)
 else:
     print("No current fixed control; complementary DiD omitted.")"""),
 py("""report = analyze_experiment(
@@ -398,7 +419,7 @@ md("""# 05 — Recurring estimator stress calibration
 This job monitors single-estimator behavior across random historical pseudo-assignments.
 It is useful regression evidence, but it does **not** authorize the selected multi-
 estimator design in notebook 03 because it does not replay that selector or decision rule."""),
-py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-2.0.0a1-py3-none-any.whl --quiet --force-reinstall --no-deps
+py("""%pip install /Workspace/Shared/supply_experiments/supply_experiments-2.0.0a2-py3-none-any.whl --quiet --force-reinstall --no-deps
 dbutils.library.restartPython()"""),
 py("""from supply_experiments.io import load_city_panel, TABLES
 from supply_experiments.calibration.aa import run_aa_calibration
@@ -408,7 +429,11 @@ from supply_experiments.estimators.sdid import fit_sdid
 import supply_experiments
 
 tables = TABLES["sandbox"]
-panel, stats = load_city_panel(spark, "2025-06-01", "2026-06-30")
+ASSUME_MISSING_CITY_DAYS_ZERO = False  # change only with a source completeness guarantee
+panel, stats = load_city_panel(
+    spark, "2025-06-01", "2026-06-30",
+    assume_missing_city_days_zero=ASSUME_MISSING_CITY_DAYS_ZERO,
+)
 eligible = [c for c in stats.index if c in panel.cities][:60]"""),
 py("""from datetime import datetime
 rows = []

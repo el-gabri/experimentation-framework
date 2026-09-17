@@ -309,6 +309,7 @@ def _fake_did_fit(n_treated, n_clusters=8, periods=5):
             "Xd": Xd,
             "yd": yd,
             "city_codes": codes,
+            "date_codes": np.tile(np.arange(periods), n_clusters),
             "treated_cities": [f"t{i}" for i in range(n_treated)],
         },
         success=True,

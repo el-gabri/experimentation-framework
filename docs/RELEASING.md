@@ -40,7 +40,7 @@ No long-lived PyPI API token is required or expected in repository secrets.
 
 3. Commit and merge to `main`, then create and push an annotated, signed tag on that
    merged commit. Its name must be `v` plus the package version, for example
-   `v2.0.0a1`. Confirm GitHub shows the tag signature as **Verified**.
+   `v2.0.0a2`. Confirm GitHub shows the tag signature as **Verified**.
 4. In GitHub Actions, manually run **Publish to PyPI** from `main` and enter that exact
    tag. The unprivileged job checks out the tag, verifies its GitHub signature,
    `origin/main` ancestry, and package version, and builds with SHA-pinned actions.

@@ -168,17 +168,24 @@ def revalidate_fixed_control(
     exclui o próprio controle e as tratadas do experimento corrente.
     `end_date` (date): último dia considerado — passe o dia anterior ao início
     do tratamento para validar apenas no pré-período."""
-    control = [c for c in control_cities if c in panel.cities]
-    missing = [c for c in control_cities if c not in panel.cities]
+    control = list(control_cities)
+    missing = sorted(set(control) - set(panel.cities))
+    if missing or len(set(control)) != len(control):
+        return ControlValidation(np.nan, np.nan, False, window_days,
+                                 note=f"controle contém cidades ausentes ou duplicadas: {missing}")
+    overlap = sorted(set(control) & set(target_exclude or ()))
+    if overlap:
+        return ControlValidation(np.nan, np.nan, False, window_days,
+                                 note=f"controle sobrepõe cidades excluídas/tratadas: {overlap}")
     if len(control) < 2:
         return ControlValidation(np.nan, np.nan, False, window_days,
                                  note=f"controle com <2 cidades no painel (faltam: {missing})")
     T = len(panel.index)
     if end_date is not None:
         T = int((panel.index.date <= end_date).sum())
-        if T < window_days:
-            return ControlValidation(np.nan, np.nan, False, window_days,
-                                     note=f"só {T} dias antes de end_date (< {window_days})")
+    if window_days <= 0 or T < window_days:
+        return ControlValidation(np.nan, np.nan, False, window_days,
+                                 note=f"janela incompleta ou inválida: {T} dias para {window_days}")
     sl = slice(max(T - window_days, 0), T)
     excl = set(control) | set(target_exclude or set())
     keep = [c for c in panel.cities if c not in excl]

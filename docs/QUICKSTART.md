@@ -62,7 +62,8 @@ the same estimator or rank is valid for a real intervention.
 
 The primary outcome is a wide `pandas.DataFrame`:
 
-- index: unique, sorted daily `DatetimeIndex`;
+- index: unique, sorted daily `DatetimeIndex`, one observation per local calendar day
+  at a consistent local time (timezone preserved);
 - columns: unique geography identifiers;
 - values: finite numeric outcomes on a common scale;
 - coverage: every date needed by the pre/post window.
@@ -82,6 +83,14 @@ panel = CityPanel(outcome=outcome)
 Do not silently replace unknown missing observations with zero. Zero filling is
 appropriate only when the data producer guarantees that an absent row means zero
 activity rather than data loss.
+
+The optional Spark loader follows the same rule. Its default rejects absent city-days;
+use `load_city_panel(..., assume_missing_city_days_zero=True)` only after confirming
+that source completeness makes absence equivalent to zero activity. Invalid observed
+GMV is always rejected. Ambiguous city names spanning multiple states must be resolved
+upstream. Optional rupture telemetry with missing flags is marked unavailable; request
+`require_rupture_telemetry=True` when the guardrail is required. A missing flag does not
+mean an observed absence of rupture.
 
 Ratio outcomes must be supplied as numerator/denominator pairs rather than daily
 precomputed ratios:

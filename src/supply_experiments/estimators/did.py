@@ -63,11 +63,11 @@ def fit_did_panel(
     within-FE só remove nível, não escala; o τ vira dominado pelas maiores).
     Com normalize_scale, τ já é aproximadamente o efeito relativo.
     """
-    treated = list(dict.fromkeys(c for c in treated_cities if c in panel.cities))
-    control = list(dict.fromkeys(c for c in control_cities
-                                 if c in panel.cities and c not in set(treated)))
-    if not treated or len(control) < 2:
-        return DiDFit(np.nan, np.nan, pd.DataFrame(), {}, False)
+    # Use the same membership and complete-window contract as the synthetic
+    # estimators; never shrink a requested group or period silently.
+    panel.slice_for(treated_cities, control_cities, window)
+    treated = [str(city) for city in treated_cities]
+    control = [str(city) for city in control_cities]
 
     pre_mask, post_mask = window.masks(panel.index)
     keep = pre_mask | post_mask
@@ -101,6 +101,8 @@ def fit_did_panel(
     Xd = np.column_stack([
         _two_way_demean(X[:, j], city_codes, date_codes) for j in range(X.shape[1])
     ])
+    if np.linalg.matrix_rank(Xd) < Xd.shape[1]:
+        raise ValueError("interação tratado × pós não identificada")
 
     beta, *_ = np.linalg.lstsq(Xd, yd, rcond=None)
     tau = float(beta[0])
@@ -122,10 +124,14 @@ def fit_did_panel(
         att_abs = att_abs_homogeneous if len(treated) == 1 else np.nan
         att_pct = att_abs_homogeneous / base if base else np.nan
 
+    if not np.isfinite(tau) or not np.isfinite(att_pct):
+        raise ValueError("estimativa relativa DiD não finita")
+
     return DiDFit(
         att=att_abs, att_pct=att_pct,
         resid=d[["city", "date", "resid", "treated"]],
         design_info={"X_names": names, "Xd": Xd, "yd": yd, "city_codes": city_codes,
+                     "date_codes": date_codes,
                      "treated_cities": treated, "control_cities": control,
                      "normalize_scale": normalize_scale, "scale": scale,
                      "estimand": "equal_city_average_relative_effect",

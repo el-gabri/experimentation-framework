@@ -47,11 +47,11 @@ For development:
 python -m pip install -e ".[dev]"
 ```
 
-The alpha release is versioned as `2.0.0a1`. After it has been published to
+The alpha release is versioned as `2.0.0a2`. After it has been published to
 PyPI, install it explicitly while it remains a pre-release:
 
 ```bash
-python -m pip install --pre supply-experiments==2.0.0a1
+python -m pip install --pre supply-experiments==2.0.0a2
 ```
 
 The core library requires only NumPy, pandas, and SciPy. Spark is optional:

@@ -14,7 +14,7 @@ from typing import Optional
 
 import numpy as np
 
-from supply_experiments.estimators.did import DiDFit
+from supply_experiments.estimators.did import DiDFit, _two_way_demean
 
 _WEBB = np.array([-np.sqrt(1.5), -1.0, -np.sqrt(0.5), np.sqrt(0.5), 1.0, np.sqrt(1.5)])
 _MIN_TREATED_CLUSTERS = 4
@@ -75,12 +75,13 @@ def wild_cluster_bootstrap(
 
     rng = np.random.default_rng(seed)
     info = did_fit.design_info
-    required = {"Xd", "yd", "city_codes"}
+    required = {"Xd", "yd", "city_codes", "date_codes"}
     if not required.issubset(info):
         raise ValueError(f"design_info ausente: {sorted(required - set(info))}")
     Xd = np.asarray(info["Xd"], float)
     yd = np.asarray(info["yd"], float)
     codes = np.asarray(info["city_codes"], int)
+    date_codes = np.asarray(info["date_codes"], int)
     if Xd.ndim != 2 or yd.ndim != 1 or codes.ndim != 1 or len(Xd) != len(yd) or len(yd) != len(codes):
         raise ValueError("design_info possui shapes incompatíveis")
     if len(codes) == 0 or codes.min() < 0 or not np.isfinite(Xd).all() or not np.isfinite(yd).all():
@@ -88,6 +89,14 @@ def wild_cluster_bootstrap(
     G = int(codes.max() + 1)
     if set(np.unique(codes)) != set(range(G)):
         raise ValueError("city_codes deve ser contíguo de 0 a G-1")
+    if (date_codes.ndim != 1 or len(date_codes) != len(yd)
+            or date_codes.min() < 0
+            or set(np.unique(date_codes)) != set(range(int(date_codes.max()) + 1))):
+        raise ValueError("date_codes incompatível com o painel")
+    pairs = np.column_stack((codes, date_codes))
+    if (len(np.unique(pairs, axis=0)) != len(yd)
+            or len(yd) != G * (int(date_codes.max()) + 1)):
+        raise ValueError("bootstrap requer painel cidade × data balanceado")
 
     treated_cities = info.get("treated_cities")
     if treated_cities is not None:
@@ -124,6 +133,9 @@ def wild_cluster_bootstrap(
         else:
             wg = rng.choice([-1.0, 1.0], size=G)
         y_b = fitted_r + resid_r * wg[codes]
+        # City multipliers break the zero date means of the original residuals.
+        # Reabsorb both fixed effects before studentizing each bootstrap draw.
+        y_b = _two_way_demean(y_b, codes, date_codes)
         beta_b, *_ = np.linalg.lstsq(Xd, y_b, rcond=None)
         resid_b = y_b - Xd @ beta_b
         se_b = _cluster_se(Xd, resid_b, codes)

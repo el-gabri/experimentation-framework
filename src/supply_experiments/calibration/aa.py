@@ -314,6 +314,11 @@ def run_aa_calibration(
         estimator_names = [method_name]
         rule_payload = decision_rule.to_dict() if decision_rule else None
         method_kwargs = {method_name: dict(fit_kwargs or {})}
+        if decision_rule is not None and (
+            set(decision_rule.methods) - {method_name}
+            or decision_rule.min_rejections > 1
+        ):
+            raise ValueError("decision_rule incompatível com o estimador único")
     else:
         if decision_rule is None:
             raise ValueError("decision_rule é obrigatório quando fit_fns é fornecido")
@@ -457,6 +462,11 @@ def run_aa_calibration(
                     assignment_mechanism=assignment_mechanism,
                     max_pre_rmspe=max_pre_rmspe,
                 )
+                if decision_rule is not None:
+                    r["reject"] = bool(
+                        r["valid_for_decision"]
+                        and decision_rule.evaluate({method_name: r}, alpha)
+                    )
             else:
                 if decision_rule is None:
                     raise ValueError("decision_rule é obrigatório quando fit_fns é fornecido")

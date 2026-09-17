@@ -11,6 +11,20 @@ import numpy as np
 import pandas as pd
 
 
+def _validate_daily_timestamps(index: pd.DatetimeIndex, label: str) -> None:
+    """One observation per local calendar day, at a consistent local time.
+
+    A timezone-aware index keeps its timezone, including daylight-saving
+    transitions. Dates are never silently normalized or merged.
+    """
+    if index.hasnans:
+        raise ValueError(f"{label} contém NaT")
+    if not pd.Index(index.date).is_unique:
+        raise ValueError(f"{label} deve ter uma observação por dia de calendário")
+    if len(index) and any(time != index[0].time() for time in index.time):
+        raise ValueError(f"{label} deve usar um horário local consistente em todos os dias")
+
+
 @dataclass(frozen=True)
 class ExperimentWindow:
     """Janelas pré/pós de um experimento."""
@@ -51,6 +65,7 @@ class ExperimentWindow:
 class CityPanel:
     """
     Painel wide: index=DatetimeIndex diário contíguo, columns=city_norm, values=KPI.
+    Uma observação por dia, no mesmo horário local; o timezone é preservado.
 
     `outcome` é o painel do KPI primário (ex.: GMV). KPIs de razão são mantidos
     como pares numerador/denominador em `numerators`/`denominators` para permitir
@@ -70,6 +85,7 @@ class CityPanel:
             raise TypeError("outcome.index deve ser DatetimeIndex")
         if idx.empty:
             raise ValueError("outcome não pode ser vazio")
+        _validate_daily_timestamps(idx, "outcome.index")
         if not idx.is_unique:
             raise ValueError("outcome.index deve ter datas únicas")
         if not idx.is_monotonic_increasing:
@@ -77,7 +93,7 @@ class CityPanel:
         if not self.outcome.columns.is_unique:
             raise ValueError("outcome.columns deve ter cidades únicas")
         full = pd.date_range(idx.min(), idx.max(), freq="D")
-        if len(full) != len(idx):
+        if not idx.equals(full):
             n_missing = len(full) - len(idx)
             if self.fill_value is None:
                 raise ValueError(
@@ -91,11 +107,11 @@ class CityPanel:
                 f"fill_value={self.fill_value}. Um buraco real de dados fica "
                 f"indistinguível de um dia com outcome=0 para os estimadores; "
                 f"use `max_zero_run`/`cv_gmv` na elegibilidade para filtrar "
-                f"séries com buracos longos, ou passe fill_value=np.nan e "
-                f"trate os NaN explicitamente antes de estimar.",
+                f"séries com buracos longos. Valores observados não finitos "
+                f"devem ser tratados antes de construir o painel.",
                 stacklevel=2,
             )
-            self.outcome = self.outcome.reindex(full).fillna(float(self.fill_value))
+            self.outcome = self.outcome.reindex(full, fill_value=float(self.fill_value))
         self.outcome = self.outcome.astype(float)
         if not np.isfinite(self.outcome.to_numpy(float)).all():
             raise ValueError("outcome contém NaN ou infinito; trate dados ausentes antes do fit")
@@ -121,6 +137,7 @@ class CityPanel:
             raise TypeError(f"{role} do KPI '{kpi}' deve ser DataFrame")
         if not isinstance(frame.index, pd.DatetimeIndex):
             raise TypeError(f"{role} do KPI '{kpi}' deve ter DatetimeIndex")
+        _validate_daily_timestamps(frame.index, f"{role} do KPI '{kpi}'")
         if not frame.index.is_unique or not frame.index.is_monotonic_increasing:
             raise ValueError(f"{role} do KPI '{kpi}' deve ter datas únicas e ordenadas")
         if not frame.columns.is_unique:
@@ -128,6 +145,10 @@ class CityPanel:
         unknown = frame.columns.difference(self.outcome.columns)
         if len(unknown):
             raise ValueError(f"{role} do KPI '{kpi}' contém cidades fora do outcome: {list(unknown)}")
+        if frame.index.tz != full_index.tz or (
+            len(frame.index) and frame.index[0].time() != full_index[0].time()
+        ):
+            raise ValueError(f"{role} do KPI '{kpi}' deve usar o timezone e horário do outcome")
         if not frame.index.equals(full_index):
             warnings.warn(
                 f"CityPanel: {role} do KPI '{kpi}' foi alinhado ao índice do outcome; "
@@ -138,7 +159,7 @@ class CityPanel:
                 raise ValueError(
                     f"{role} do KPI '{kpi}' não cobre o índice completo e fill_value=None"
                 )
-            frame = frame.reindex(full_index).fillna(float(self.fill_value))
+            frame = frame.reindex(full_index, fill_value=float(self.fill_value))
         frame = frame.astype(float)
         if not np.isfinite(frame.to_numpy(float)).all():
             raise ValueError(f"{role} do KPI '{kpi}' contém NaN ou infinito")
